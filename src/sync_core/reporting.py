@@ -291,10 +291,16 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         # === Sheet 7: Duplicate Items - Summary ===
         duplicates_analysis_df = change_results.get('duplicates_analysis_df')
         if duplicates_analysis_df is not None and len(duplicates_analysis_df) > 0:
-            # Rename columns for clarity
+            # Rename columns for clarity and convert lists to readable strings
             dup_summary_df = duplicates_analysis_df.rename(
                 {'occurrence_count': 'Times Updated', 'Update_Dates': 'All Update Dates', 'Prices': 'All Prices'}
+            ).with_columns(
+                [
+                    pl.col('All Update Dates').map_elements(lambda x: str(x) if x else '', return_dtype=pl.Utf8),
+                    pl.col('All Prices').map_elements(lambda x: str(x) if x else '', return_dtype=pl.Utf8),
+                ]
             )
+
             _write_dataframe_to_worksheet(workbook, dup_summary_df, 'Duplicate Items - Summary', logger)
 
         # === Sheet 8: Duplicate Items - All Versions ===
@@ -378,6 +384,10 @@ def _write_dataframe_to_worksheet(workbook, df: pl.DataFrame, sheet_name: str, l
 
     # Write headers
     header_format = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3'})
+
+    # Create date format
+    date_format = workbook.add_format({'num_format': 'yyyy-mm-dd'})
+
     for col_num, column_name in enumerate(df.columns):
         worksheet.write(0, col_num, column_name, header_format)
 
@@ -387,7 +397,13 @@ def _write_dataframe_to_worksheet(workbook, df: pl.DataFrame, sheet_name: str, l
             # Convert lists to strings for Excel
             if isinstance(value, list):
                 value = str(value)
-            worksheet.write(row_num, col_num, value)
+
+            # Apply date format for date columns
+            column_name = df.columns[col_num]
+            if 'date' in column_name.lower() and value is not None:
+                worksheet.write(row_num, col_num, value, date_format)
+            else:
+                worksheet.write(row_num, col_num, value)
 
     # Auto-adjust column widths (approximate)
     for col_num, column_name in enumerate(df.columns):
