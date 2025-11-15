@@ -305,22 +305,26 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         # === Sheet 9: Validation Issues ===
         validation_issues = []
 
-        # Contract-Vendor issues
+        # Contract-Vendor issues - FIXED
         contracts_with_issues = validation_results.get('contracts_with_multiple_vendors', [])
         if contracts_with_issues:
-            for contract_no, vendors in contracts_with_issues:
+            for item in contracts_with_issues:
+                contract_no = item.get('Contract No')
+                vendor_codes = item.get('vendor_codes', [])
                 validation_issues.append(
                     {
                         'Issue Type': 'Contract-Vendor Mismatch',
                         'Contract No': contract_no,
-                        'Details': f'Multiple vendors: {", ".join(vendors)}',
+                        'Details': f'Multiple vendors: {", ".join(str(v) for v in vendor_codes)}',
                     }
                 )
 
-        # Blank vendor catalogue issues
-        unexpected_blanks = validation_results.get('unexpected_blank_items', [])
-        if unexpected_blanks:
-            for pmm_item in unexpected_blanks[:100]:  # Limit to first 100
+        # Blank vendor catalogue issues - FIXED
+        blank_catalogue_df = validation_results.get('blank_vendor_catalogue_df')
+        if blank_catalogue_df is not None and len(blank_catalogue_df) > 0:
+            # Get PMM Item Numbers from the dataframe
+            pmm_items = blank_catalogue_df.get_column('PMM Item Number').to_list()
+            for pmm_item in pmm_items[:100]:  # Limit to first 100
                 validation_issues.append(
                     {
                         'Issue Type': 'Unexpected Blank Vendor Catalogue',
@@ -329,7 +333,7 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
                     }
                 )
 
-        # Inconsistent vendor catalogue
+        # Inconsistent vendor catalogue - NO CHANGE (already correct)
         inconsistent_items = validation_results.get('inconsistent_vendor_catalogue_items', [])
         if inconsistent_items:
             for item in inconsistent_items:
