@@ -273,22 +273,25 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
                     combined_breakdown = combined_breakdown.rename({'row_count': 'Row Count'})
                     _write_dataframe_to_worksheet(workbook, combined_breakdown, 'Date Breakdown', logger)
 
-        # === Sheet 4: All Changes ===
-        changes_df = change_results.get('changes_df')
-        if changes_df is not None and len(changes_df) > 0:
-            _write_dataframe_to_worksheet(workbook, changes_df, 'Changes', logger)
-
-        # === Sheet 5: New Rows ===
+        # === Sheet 4: New Rows (UPDATED - Full records instead of field-level) ===
         new_rows_df = change_results.get('new_rows_df')
         if new_rows_df is not None and len(new_rows_df) > 0:
-            _write_dataframe_to_worksheet(workbook, new_rows_df, 'New Rows', logger)
+            # Get unique records from field-level data
+            # Group by the unique key columns to get one row per record
+            key_cols = ['PMM Item Number', 'Corp Acct', 'Vendor Code', 'Additional Cost Centre', 'Additional GL Account']
 
-        # === Sheet 6: Updated Rows ===
+            # Create a pivot to get all columns as actual columns (not rows)
+            # This transforms from field-level to record-level
+            new_records = new_rows_df.pivot(index=key_cols + ['Item Update Date'], columns='Column', values='Current Value')
+
+            _write_dataframe_to_worksheet(workbook, new_records, 'New Rows', logger)
+
+        # === Sheet 5: Updated Rows (KEEP AS-IS - Field-level changes) ===
         updated_rows_df = change_results.get('updated_rows_df')
         if updated_rows_df is not None and len(updated_rows_df) > 0:
             _write_dataframe_to_worksheet(workbook, updated_rows_df, 'Updated Rows', logger)
 
-        # === Sheet 7: Duplicate Items - Summary ===
+        # === Sheet 6: Duplicate Items - Summary ===
         duplicates_analysis_df = change_results.get('duplicates_analysis_df')
         if duplicates_analysis_df is not None and len(duplicates_analysis_df) > 0:
             # Rename columns for clarity and convert lists to readable strings
@@ -303,12 +306,12 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
 
             _write_dataframe_to_worksheet(workbook, dup_summary_df, 'Duplicate Items - Summary', logger)
 
-        # === Sheet 8: Duplicate Items - All Versions ===
+        # === Sheet 7: Duplicate Items - All Versions ===
         duplicates_full_df = change_results.get('duplicates_full_df')
         if duplicates_full_df is not None and len(duplicates_full_df) > 0:
             _write_dataframe_to_worksheet(workbook, duplicates_full_df, 'Duplicate Items - All Versions', logger)
 
-        # === Sheet 9: Validation Issues ===
+        # === Sheet 8: Validation Issues ===
         validation_issues = []
 
         # Contract-Vendor issues - FIXED
