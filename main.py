@@ -6,6 +6,9 @@ Phases:
   1. Integration - Integrate daily files with 0031 baseline
   2. Classification - Classify records into buckets
   3. Export      - Generate export files
+
+Note: All commands (except 'sync' and 'status') automatically run Phase 0
+(database sync) first to ensure you're working with the latest data.
 """
 
 import json
@@ -84,71 +87,109 @@ def get_config_paths(config: dict) -> dict:
     }
 
 
-def run_all_phases(config: dict, paths: dict, logger):
-    """Run all phases in sequence"""
-    logger.info('=' * 60)
-    logger.info('RUNNING ALL PHASES')
-    logger.info('=' * 60)
-
-    total_start = time.time()
-
-    # Phase 0: Sync database
-    if config.get('phases', {}).get('sync', {}).get('enabled', True):
-        try:
-            process_sync(config, paths, logger)
-        except Exception as e:
-            logger.error(f'Phase 0 (Sync) failed: {e}')
-            return False
-    else:
+def run_sync_phase(config: dict, paths: dict, logger) -> bool:
+    """Run Phase 0: Database Sync"""
+    if not config.get('phases', {}).get('sync', {}).get('enabled', True):
         logger.info('Phase 0 (Sync): Skipped (disabled in config)')
+        return True
 
-    # Phase 1: Integration
-    if config.get('phases', {}).get('integration', {}).get('enabled', True):
-        try:
-            success = process_integrate(config, paths, logger)
-            if not success:
-                logger.error('Phase 1 (Integration) failed, stopping')
-                return False
-        except Exception as e:
-            logger.error(f'Phase 1 (Integration) failed: {e}')
-            return False
-    else:
+    try:
+        process_sync(config, paths, logger)
+        return True
+    except Exception as e:
+        logger.error(f'Phase 0 (Sync) failed: {e}')
+        return False
+
+
+def run_integrate_phase(config: dict, paths: dict, logger) -> bool:
+    """Run Phase 1: Integration (with auto-sync)"""
+    logger.info('=' * 60)
+    logger.info('RUNNING: SYNC + INTEGRATE')
+    logger.info('=' * 60)
+
+    # Always run Phase 0 first
+    if not run_sync_phase(config, paths, logger):
+        logger.error('Phase 0 (Sync) failed, stopping')
+        return False
+
+    # Run Phase 1
+    if not config.get('phases', {}).get('integration', {}).get('enabled', True):
         logger.info('Phase 1 (Integration): Skipped (disabled in config)')
+        return True
 
-    # Phase 2: Classification
-    if config.get('phases', {}).get('classification', {}).get('enabled', True):
-        try:
-            success = process_classify(config, paths, logger)
-            if not success:
-                logger.error('Phase 2 (Classification) failed, stopping')
-                return False
-        except Exception as e:
-            logger.error(f'Phase 2 (Classification) failed: {e}')
+    try:
+        logger.info('')
+        logger.info('=' * 60)
+        logger.info('PHASE 1: INTEGRATION')
+        logger.info('=' * 60)
+        success = process_integrate(config, paths, logger)
+        if not success:
+            logger.error('Phase 1 (Integration) failed')
             return False
-    else:
+        return True
+    except Exception as e:
+        logger.error(f'Phase 1 (Integration) failed: {e}')
+        return False
+
+
+def run_classify_phase(config: dict, paths: dict, logger) -> bool:
+    """Run Phases 0-2: Sync + Integration + Classification"""
+    logger.info('=' * 60)
+    logger.info('RUNNING: SYNC + INTEGRATE + CLASSIFY')
+    logger.info('=' * 60)
+
+    # Run Phase 0 + 1
+    if not run_integrate_phase(config, paths, logger):
+        return False
+
+    # Run Phase 2
+    if not config.get('phases', {}).get('classification', {}).get('enabled', True):
         logger.info('Phase 2 (Classification): Skipped (disabled in config)')
+        return True
 
-    # Phase 3: Export
-    if config.get('phases', {}).get('export', {}).get('enabled', True):
-        try:
-            success = process_export(config, paths, logger)
-            if not success:
-                logger.error('Phase 3 (Export) failed, stopping')
-                return False
-        except Exception as e:
-            logger.error(f'Phase 3 (Export) failed: {e}')
+    try:
+        logger.info('')
+        logger.info('=' * 60)
+        logger.info('PHASE 2: CLASSIFICATION')
+        logger.info('=' * 60)
+        success = process_classify(config, paths, logger)
+        if not success:
+            logger.error('Phase 2 (Classification) failed')
             return False
-    else:
+        return True
+    except Exception as e:
+        logger.error(f'Phase 2 (Classification) failed: {e}')
+        return False
+
+
+def run_export_phase(config: dict, paths: dict, logger) -> bool:
+    """Run Full Pipeline: Phases 0-3"""
+    logger.info('=' * 60)
+    logger.info('RUNNING: FULL PIPELINE (SYNC + INTEGRATE + CLASSIFY + EXPORT)')
+    logger.info('=' * 60)
+
+    # Run Phase 0 + 1 + 2
+    if not run_classify_phase(config, paths, logger):
+        return False
+
+    # Run Phase 3
+    if not config.get('phases', {}).get('export', {}).get('enabled', True):
         logger.info('Phase 3 (Export): Skipped (disabled in config)')
+        return True
 
-    total_time = time.time() - total_start
-
-    logger.info('=' * 60)
-    logger.info('✓ ALL PHASES COMPLETED SUCCESSFULLY')
-    logger.info(f'Total time: {total_time:.2f} seconds')
-    logger.info('=' * 60)
-
-    return True
+    try:
+        logger.info('')
+        logger.info('=' * 60)
+        logger.info('PHASE 3: EXPORT')
+        logger.info('=' * 60)
+        success = process_export(config, paths, logger)
+        if not success:
+            logger.error('Phase 3 (Export) failed')
+            return False
+        return True
+    except Exception as e:
+        logger.error(f'Phase 3 (Export) failed: {e}')
+        return False
 
 
 def show_status(config: dict, paths: dict, logger):
@@ -208,24 +249,26 @@ def print_usage():
     print('\nData Processing Pipeline CLI')
     print('=' * 60)
     print('\nUsage:')
-    print('  python main.py all                Run all phases')
-    print('  python main.py sync               Phase 0: Database sync only')
-    print('  python main.py integrate          Phase 1: Integration only')
-    print('  python main.py classify           Phase 2: Classification only')
-    print('  python main.py export             Phase 3: Export only')
-    print('  python main.py integrate-classify Phases 1-2')
-    print('  python main.py classify-export    Phases 2-3')
-    print('  python main.py status             Show pipeline status')
-    print('  python main.py --help             Show this help')
+    print('  python main.py sync        Update 0031 database only')
+    print('  python main.py integrate   Sync database + integrate daily files')
+    print('  python main.py classify    Full pipeline up to classification')
+    print('  python main.py export      Full pipeline including export')
+    print('  python main.py all         (same as export - full pipeline)')
+    print('  python main.py status      Show current status')
+    print('  python main.py --help      Show this help')
     print('\nPhases:')
-    print('  sync        Sync 0031 database from incremental backups')
-    print('  integrate   Integrate daily files with 0031 baseline')
-    print('  classify    Classify records into buckets')
-    print('  export      Generate export files')
+    print('  0. Sync          Sync 0031 database from incremental backups')
+    print('  1. Integration   Integrate daily files with 0031 baseline')
+    print('  2. Classification Classify records into buckets')
+    print('  3. Export        Generate export files')
+    print('\nNote:')
+    print('  All commands (except sync and status) automatically run Phase 0')
+    print("  (database sync) first to ensure you're working with the latest data.")
     print('\nExamples:')
-    print('  python main.py all                # Run full pipeline')
-    print('  python main.py integrate          # Process daily files only')
-    print('  python main.py status             # Check progress')
+    print('  python main.py integrate   # Most common: sync DB + process daily files')
+    print('  python main.py export      # Complete end-to-end processing')
+    print('  python main.py sync        # Only update database, no further processing')
+    print('  python main.py status      # Check current pipeline status')
     print()
 
 
@@ -266,46 +309,42 @@ def main():
     logger.info(f'Time: {time.strftime("%Y-%m-%d %H:%M:%S")}')
 
     try:
-        if command == 'all':
-            run_all_phases(config, paths, logger)
+        if command in ['all', 'export']:
+            # Full pipeline (Phases 0-3)
+            success = run_export_phase(config, paths, logger)
+            if success:
+                logger.info('')
+                logger.info('=== Full Pipeline Completed Successfully ===')
+            else:
+                logger.error('Pipeline failed')
+                sys.exit(1)
 
         elif command == 'sync':
+            # Phase 0 only
             logger.info('=' * 60)
             logger.info('PHASE 0: DATABASE SYNC')
             logger.info('=' * 60)
             process_sync(config, paths, logger)
 
         elif command == 'integrate':
-            logger.info('=' * 60)
-            logger.info('PHASE 1: INTEGRATION')
-            logger.info('=' * 60)
-            process_integrate(config, paths, logger)
+            # Phases 0-1
+            success = run_integrate_phase(config, paths, logger)
+            if success:
+                logger.info('')
+                logger.info('=== Sync + Integration Completed Successfully ===')
+            else:
+                logger.error('Integration pipeline failed')
+                sys.exit(1)
 
         elif command == 'classify':
-            logger.info('=' * 60)
-            logger.info('PHASE 2: CLASSIFICATION')
-            logger.info('=' * 60)
-            process_classify(config, paths, logger)
-
-        elif command == 'export':
-            logger.info('=' * 60)
-            logger.info('PHASE 3: EXPORT')
-            logger.info('=' * 60)
-            process_export(config, paths, logger)
-
-        elif command == 'integrate-classify':
-            logger.info('=== Running Phases 1-2 ===')
-            if process_integrate(config, paths, logger):
-                process_classify(config, paths, logger)
+            # Phases 0-2
+            success = run_classify_phase(config, paths, logger)
+            if success:
+                logger.info('')
+                logger.info('=== Classification Pipeline Completed Successfully ===')
             else:
-                logger.error('Integration failed, skipping classification')
-
-        elif command == 'classify-export':
-            logger.info('=== Running Phases 2-3 ===')
-            if process_classify(config, paths, logger):
-                process_export(config, paths, logger)
-            else:
-                logger.error('Classification failed, skipping export')
+                logger.error('Classification pipeline failed')
+                sys.exit(1)
 
         elif command == 'status':
             show_status(config, paths, logger)
