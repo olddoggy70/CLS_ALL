@@ -3,6 +3,7 @@ Reporting functions for validation and change tracking
 """
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -237,12 +238,14 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         if change_results.get('has_changes'):
             per_file_summary = change_results.get('changes_summary', {}).get('per_file_summary', [])
             if per_file_summary:
+                # Create DataFrame and explicitly specify column order
                 per_file_df = pl.DataFrame(per_file_summary)
 
                 # Drop the date_breakdown column (it's a DataFrame, can't write to Excel cell)
                 if 'date_breakdown' in per_file_df.columns:
                     per_file_df = per_file_df.drop('date_breakdown')
 
+                # Now rename
                 per_file_df = per_file_df.rename(
                     {
                         'file': 'File Name',
@@ -276,15 +279,28 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         # === Sheet 4: New Rows (UPDATED - Full records instead of field-level) ===
         new_rows_df = change_results.get('new_rows_df')
         if new_rows_df is not None and len(new_rows_df) > 0:
-            # Get unique records from field-level data
-            # Group by the unique key columns to get one row per record
+            # Transform from field-level to record-level format
+            # Original format: Each row is one field of a record
+            # Target format: Each row is one complete record with all fields as columns
+
             key_cols = ['PMM Item Number', 'Corp Acct', 'Vendor Code', 'Additional Cost Centre', 'Additional GL Account']
 
-            # Create a pivot to get all columns as actual columns (not rows)
-            # This transforms from field-level to record-level
-            new_records = new_rows_df.pivot(index=key_cols + ['Item Update Date'], columns='Column', values='Current Value')
+            # Filter out rows where 'Column' matches any of the index columns (they're already in the index)
+            # This includes the 5 key columns + Item Update Date
+            index_cols = [*key_cols, 'Item Update Date']
+            new_rows_filtered = new_rows_df.filter(~pl.col('Column').is_in(index_cols))
 
-            _write_dataframe_to_worksheet(workbook, new_records, 'New Rows', logger)
+            # Only create the sheet if we have data after filtering
+            if len(new_rows_filtered) > 0:
+                # Pivot to get all columns as actual columns
+                new_records = new_rows_filtered.pivot(
+                    index=index_cols,
+                    columns='Column',
+                    values='Current Value',
+                    aggregate_function='first',  # Take first value if duplicates exist
+                )
+
+                _write_dataframe_to_worksheet(workbook, new_records, 'New Rows', logger)
 
         # === Sheet 5: Updated Rows (KEEP AS-IS - Field-level changes) ===
         updated_rows_df = change_results.get('updated_rows_df')
@@ -294,13 +310,23 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         # === Sheet 6: Duplicate Items - Summary ===
         duplicates_analysis_df = change_results.get('duplicates_analysis_df')
         if duplicates_analysis_df is not None and len(duplicates_analysis_df) > 0:
-            # Rename columns for clarity and convert lists to readable strings
-            dup_summary_df = duplicates_analysis_df.rename(
-                {'occurrence_count': 'Times Updated', 'Update_Dates': 'All Update Dates', 'Prices': 'All Prices'}
-            ).with_columns(
+            # Convert list columns to readable strings
+            dup_summary_df = (
+                duplicates_analysis_df.with_columns(
+                    [
+                        pl.col('Update_Dates').list.eval(pl.element().cast(pl.Utf8)).list.join(', ').alias('Update_Dates_str'),
+                        pl.col('Prices').list.eval(pl.element().cast(pl.Utf8)).list.join(', ').alias('Prices_str'),
+                    ]
+                )
+                .drop(['Update_Dates', 'Prices'])
+                .rename({'occurrence_count': 'Times Updated', 'Update_Dates_str': 'All Update Dates', 'Prices_str': 'All Prices'})
+            )
+
+            # Add brackets back to the list columns
+            dup_summary_df = dup_summary_df.with_columns(
                 [
-                    pl.col('All Update Dates').map_elements(lambda x: str(x) if x else '', return_dtype=pl.Utf8),
-                    pl.col('All Prices').map_elements(lambda x: str(x) if x else '', return_dtype=pl.Utf8),
+                    pl.concat_str([pl.lit('['), pl.col('All Update Dates'), pl.lit(']')]).alias('All Update Dates'),
+                    pl.concat_str([pl.lit('['), pl.col('All Prices'), pl.lit(']')]).alias('All Prices'),
                 ]
             )
 
@@ -403,7 +429,8 @@ def _write_dataframe_to_worksheet(workbook, df: pl.DataFrame, sheet_name: str, l
 
             # Apply date format for date columns
             column_name = df.columns[col_num]
-            if 'date' in column_name.lower() and value is not None:
+            # if 'date' in column_name.lower() and value is not None:
+            if re.search(r'\bdate\b', column_name.lower()) and value is not None:
                 worksheet.write(row_num, col_num, value, date_format)
             else:
                 worksheet.write(row_num, col_num, value)
