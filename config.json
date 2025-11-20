@@ -1,0 +1,143 @@
+{
+  "paths": {
+    "reports_folder": "data/reports/0031",
+    "reports_archive_folder": "data/reports/archive",
+    "database_folder": "data/database",
+    "database_file": "0031.parquet",
+    "backup_folder": "data/database/backup",
+    "audit_folder": "data/database/audit",
+    "daily_files_folder": "data/daily_files",
+    "daily_archive_folder": "data/daily_files/archive",
+    "output_folder": "data/output",
+    "test_csv": "test.csv",
+    "integrated_output": "data/integrated",
+    "classified_output": "data/classified",
+    "exports_output": "data/exports",
+    "reference_files": {
+      "mfn_mapping": "data/ref_files/MFN Mapping.xlsx",
+      "vn_mapping": "data/ref_files/VN Mapping.xlsx",
+      "blank_vpn_permitted_file": "data/ref_files/Blank Vpn Permitted.xlsx"
+    }
+  },
+  "phases": {
+    "sync": {
+      "enabled": true,
+      "description": "Sync 0031 database from incremental backups"
+    },
+    "integration": {
+      "enabled": true,
+      "description": "Integrate daily files with 0031 baseline"
+    },
+    "classification": {
+      "enabled": true,
+      "description": "Classify into buckets (update, create, links)",
+      "buckets": {
+        "update": "Records to update",
+        "create": "New records to create",
+        "vendor_link": "Vendor linkage updates",
+        "contract_link": "Contract linkage updates"
+      }
+    },
+    "export": {
+      "enabled": true,
+      "description": "Generate export files",
+      "format": "xlsx"
+    }
+  },
+  "file_patterns": {
+    "daily_incremental": {
+      "pattern": "0031-Contract Item Price Cat Pkg Extract *.xlsx",
+      "date_format": "0031-Contract Item Price Cat Pkg Extract %Y_%m_%d*.xlsx",
+      "archive_after_processing": true,
+      "description": "Matches: 0031-Contract Item Price Cat Pkg Extract 2025_11_06.xlsx or 0031-Contract Item Price Cat Pkg Extract 2025_10_28-2025_11_02.xlsx"
+    },
+    "weekly_full": {
+      "pattern": "0031-Contract Item Price Cat Pkg Extract [0-9][0-9][0-9][0-9].xlsx",
+      "date_format": "0031-Contract Item Price Cat Pkg Extract %m%d.xlsx",
+      "keep_only_latest": true,
+      "description": "Matches: 0031-Contract Item Price Cat Pkg Extract 0201.xlsx (MMDD format)"
+    },
+    "daily_files": {
+      "pattern": "Allscripts_historical_deduped_*.xlsx",
+      "date_format": "Allscripts_historical_deduped_%Y%m%d_%S.xlsx",
+      "archive_after_processing": true
+    }
+  },
+  "processing_schedule": {
+    "process_incrementals_on_startup": true,
+    "auto_detect_weekly_full": true,
+    "max_incrementals_per_run": 10,
+    "process_daily_files": true
+  },
+  "archive_settings": {
+    "enabled": true,
+    "retention_days": 90
+  },
+  "data_processing": {
+    "date_columns": [
+      "Contract EFF Date",
+      "Contract EXP Date",
+      "Item Create Date",
+      "Item Update Date"
+    ],
+    "daily_date_columns": [
+      "Change Effective Date",
+      "Contract Start Date",
+      "Contract End Date"
+    ],
+    "type_optimization": {
+      "integer_columns": [
+        "UOM1 QTY",
+        "UOM2 QTY",
+        "UOM3 QTY"
+      ],
+      "float_columns": [
+        "Default UOM Price",
+        "Price1",
+        "Price2",
+        "Price3"
+      ],
+      "categorical_columns": [
+        "UOM1",
+        "UOM2",
+        "UOM3",
+        "Default Unit Of Measure",
+        "UOM1 Cont",
+        "UOM2 Cont",
+        "UOM3 Cont",
+        "Corp Acct"
+      ]
+    },
+    "columns_to_drop": [
+      "Corporation Info",
+      "Item Status",
+      "Commodity Code",
+      "Alternate Description1",
+      "Alternate Description 2",
+      "Alternate Description 3",
+      "Additional Cost Centre",
+      "Additional GL Account",
+      "MISC3",
+      "MISC4",
+      "Tax Jurisdiction",
+      "Item Create Date",
+      "Item Update Date",
+      "Supply Type Code"
+    ]
+  },
+  "processing_options": {
+    "infer_schema_length": 0,
+    "enable_debug_output": false,
+    "enable_timing_output": true
+  },
+  "update_settings": {
+    "backup_retention_days": 14,
+    "state_file": "parquet_state.json"
+  },
+  "logging": {
+    "console_level": "INFO",
+    "file_level": "DEBUG",
+    "log_folder": "logs",
+    "retention_days": 30
+  }
+}
