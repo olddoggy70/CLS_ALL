@@ -490,10 +490,42 @@ def apply_incremental_update(
     logger.debug(f'  Rows to update: {len(update_keys):,}')
     logger.debug(f'  New rows to add: {len(new_keys):,}')
 
+    # After identifying duplicates being updated
+    duplicate_keys_in_db = current_df.group_by('_merge_key').agg(pl.count().alias('count')).filter(pl.col('count') > 1)
+
+    if len(duplicate_keys_in_db) > 0:
+        logger.warning(f'  WARNING: Found {len(duplicate_keys_in_db)} duplicate keys in database!')
+
+        # Find which duplicate keys are being updated
+        duplicate_keys_set = set(duplicate_keys_in_db.select('_merge_key').to_series().to_list())
+        duplicates_being_updated = update_keys & duplicate_keys_set
+
+        if duplicates_being_updated:
+            # Count total extra rows that will be removed
+            extra_rows_removed = (
+                current_df.filter(pl.col('_merge_key').is_in(list(duplicates_being_updated)))
+                .group_by('_merge_key')
+                .agg(pl.count().alias('count'))
+                .select((pl.col('count') - 1).sum())
+                .item()
+            )
+            logger.warning(f'  {len(duplicates_being_updated)} duplicate keys will be updated')
+            logger.warning(f'  This will remove {extra_rows_removed} extra rows from database')
+
+            # NEW: Log the actual merge keys being cleaned
+            logger.info('  Duplicate keys being cleaned:')
+            for merge_key in sorted(list(duplicates_being_updated))[:10]:  # Show first 10
+                logger.info(f'    - {merge_key}')
+            if len(duplicates_being_updated) > 10:
+                logger.info(f'    ... and {len(duplicates_being_updated) - 10} more')
+
     # Apply merge: Remove old versions and add all incremental data
     logger.info('Merging with database...')
     if update_keys:
         updated_df = current_df.filter(~pl.col('_merge_key').is_in(list(update_keys)))
+        removed_count = len(current_df) - len(updated_df)
+        logger.debug(f'  Rows removed from database: {removed_count:,}')
+        logger.debug(f'  Expected to remove: {len(update_keys):,}')
     else:
         updated_df = current_df
 
