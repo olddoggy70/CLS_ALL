@@ -74,6 +74,10 @@
     "retention_days": 90
   },
   "data_processing": {
+    "filter_rules": {
+      "exclude_corp_acct": ["0202", "0205", "0502"],
+      "exclude_vendor_prefix": []
+    },
     "date_columns": [
       "Contract EFF Date",
       "Contract EXP Date",
@@ -86,12 +90,10 @@
       "Contract End Date"
     ],
     "type_optimization": {
-      "integer_columns": [
+      "float32_columns": [
         "UOM1 QTY",
         "UOM2 QTY",
-        "UOM3 QTY"
-      ],
-      "float_columns": [
+        "UOM3 QTY",
         "Default UOM Price",
         "Price1",
         "Price2",
