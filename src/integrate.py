@@ -44,6 +44,9 @@ def process_integrate(config: dict, paths: dict) -> bool:
         # Add reference mappings
         enriched_df = _add_reference_mappings(enriched_df, config, paths)
 
+        # Add highest UoM Price
+        enriched_df = _add_highest_uom_price(enriched_df)
+        
         # Finalize DataFrame
         final_df = _finalize_dataframe(enriched_df)
 
@@ -373,6 +376,56 @@ def _add_reference_mappings(df: pl.DataFrame, config: dict, paths: dict) -> pl.D
     )
 
     return df
+
+def _add_highest_uom_price(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Adds a column 'Highest_UOM_Price' to the dataframe based on UOM conversions.
+    Handles string columns by casting to numeric types.
+    """
+    print('Adding highest_uom_price...')
+    # Step 1: Cast quantity and price columns to numeric (Float64)
+    df = df.with_columns([
+        pl.col('AUOM1 QTY').str.replace_all(',','').cast(pl.Float64, strict=False),
+        pl.col('AUOM2 QTY').str.replace_all(',','').cast(pl.Float64, strict=False),
+        pl.col('AUOM3 QTY').str.replace_all(',','').cast(pl.Float64, strict=False),
+        pl.col('Purchase UOM Price').str.replace_all(',','').cast(pl.Float64, strict=False)
+    ])
+    
+    # Step 2: Find the quantity for the Purchase Order Price UOM
+    purchase_qty = (
+        pl.when(pl.col('Purchase Order Price Unit of Measure') == pl.col('Base Unit of Measure'))
+        .then(pl.lit(1.0))
+        .when(pl.col('Purchase Order Price Unit of Measure') == pl.col('AUOM1'))
+        .then(pl.col('AUOM1 QTY'))
+        .when(pl.col('Purchase Order Price Unit of Measure') == pl.col('AUOM2'))
+        .then(pl.col('AUOM2 QTY'))
+        .when(pl.col('Purchase Order Price Unit of Measure') == pl.col('AUOM3'))
+        .then(pl.col('AUOM3 QTY'))
+        .otherwise(pl.lit(1.0))
+        .fill_null(1.0)
+    )
+    
+    # Step 3: Calculate price per base unit
+    price_per_base = pl.col('Purchase UOM Price') / purchase_qty
+    
+    # Step 4: Calculate prices for each UOM level
+    base_price = price_per_base
+    auom1_price = price_per_base * pl.col('AUOM1 QTY').fill_null(0.0)
+    auom2_price = price_per_base * pl.col('AUOM2 QTY').fill_null(0.0)
+    auom3_price = price_per_base * pl.col('AUOM3 QTY').fill_null(0.0)
+    
+    # Step 5: Find the maximum price across all UOMs
+    df = df.with_columns([
+        pl.max_horizontal([
+            base_price,
+            auom1_price,
+            auom2_price,
+            auom3_price
+        ]).alias('Highest_UOM_Price')
+    ])
+    
+    return df
+
 
 
 def _finalize_dataframe(df: pl.DataFrame) -> pl.DataFrame:
