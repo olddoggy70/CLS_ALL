@@ -108,28 +108,19 @@ def convert_and_optimize_columns(df: pl.DataFrame, config: dict, logger: logging
                 ]
             )
 
-    # 2. Optimize integer columns (round decimals first to handle data quality issues)
+    # 2. Optimize float32 columns (numeric optimization)
     type_opt = config.get('type_optimization', {})
-    int_columns = type_opt.get('integer_columns', [])
-    if int_columns:
-        int_cols_present = [col for col in int_columns if col in df.columns]
-        if int_cols_present:
-            logger.debug(f'  Optimizing {len(int_cols_present)} integer columns (rounding decimals)...')
-            df = df.with_columns([pl.col(col).cast(pl.Float32) for col in int_cols_present])
-
-    # 3. Optimize float columns
-    float_columns = type_opt.get('float_columns', [])
-    if float_columns:
-        float_cols_present = [col for col in float_columns if col in df.columns]
-        if float_cols_present:
-            logger.debug(f'  Optimizing {len(float_cols_present)} float columns...')
-            df = df.with_columns([pl.col(col).cast(pl.Float64) for col in float_cols_present])
+    float32_columns = type_opt.get('float32_columns', [])
+    if float32_columns:
+        float32_cols_present = [col for col in float32_columns if col in df.columns]
+        if float32_cols_present:
+            logger.debug(f'  Optimizing {len(float32_cols_present)} float32 columns...')
+            df = df.with_columns([pl.col(col).cast(pl.Float32) for col in float32_cols_present])
 
     # Note: Categorical columns are NOT converted here
     # They are applied at read time in orchestrator.py for runtime performance only
 
     return df
-
 
 def apply_categorical_types(df: pl.DataFrame, config: dict) -> pl.DataFrame:
     """
