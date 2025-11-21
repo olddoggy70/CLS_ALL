@@ -26,12 +26,6 @@ def process_integrate(config: dict, paths: dict, logger: logging.Logger | None =
     if logger is None:
         logger = logging.getLogger('data_pipeline.integrate')
 
-    logger.info('')
-    logger.info('=' * 60)
-    logger.info('PHASE 1: INTEGRATION')
-    logger.info('Integrate daily files with 0031 baseline')
-    logger.info('=' * 60)
-
     try:
         # Process daily data
         daily_df = _process_daily_data(config, paths, logger)
@@ -60,17 +54,17 @@ def process_integrate(config: dict, paths: dict, logger: logging.Logger | None =
         # Save integrated output
         output_path = _save_integrated_output(final_df, config, paths, logger)
 
-        logger.info(f'\n✓ Phase 1 completed successfully')
-        logger.info(f'  Output: {output_path}')
-        logger.info(f'  Shape: {final_df.shape}')
+        logger.info(f'✓ Phase 1 completed successfully')
+        logger.info(f'  Output: {output_path.name}')
+        logger.info(f'  Rows: {len(final_df):,}, Columns: {len(final_df.columns)}')
 
         return True
 
     except Exception as e:
-        logger.error(f'\n!!! Phase 1 failed: {e}')
+        logger.error(f'Phase 1 failed: {e}')
         import traceback
 
-        logger.error(traceback.format_exc())
+        logger.debug(traceback.format_exc())
         raise
 
 
@@ -78,14 +72,15 @@ def _process_daily_data(config: dict, paths: dict, logger: logging.Logger | None
     """Process daily Excel files."""
     if logger is None:
         logger = logging.getLogger('data_pipeline.integrate')
-    logger.info('')
-    logger.info('--- Processing Daily Data ---')
+
+    logger.info('Processing daily files...')
 
     daily_files = list(paths['daily_files_folder'].glob('*.xlsx'))
 
     if not daily_files:
         raise ValueError('No daily Excel files found in daily_files folder')
-    logger.info(f'Found {len(daily_files)} daily file(s)')
+
+    logger.debug(f'Found {len(daily_files)} daily file(s)')
 
     # Process each file separately to add source tracking and per file index
     df_list = []
@@ -95,7 +90,7 @@ def _process_daily_data(config: dict, paths: dict, logger: logging.Logger | None
             df = df.with_columns(pl.lit(file_path.stem).alias('Source_File'))
             df = df.with_row_index('Index', offset=1)
             df_list.append(df)
-            logger.debug(f'  {file_path.name} - {df.shape}')
+            logger.debug(f'  Loaded {file_path.name}: {len(df):,} rows')
         except Exception as e:
             logger.warning(f'  Failed to read {file_path.name}: {e}')
 
@@ -110,7 +105,7 @@ def _process_daily_data(config: dict, paths: dict, logger: logging.Logger | None
     # Move Source_file into the first column
     daily_df = daily_df.select(['Source_File'] + [col for col in daily_df.columns if col != 'Source_File'])
 
-    logger.info(f'Daily DataFrame shape: {daily_df.shape}')
+    logger.debug(f'Daily data: {len(daily_df):,} rows, {len(daily_df.columns)} columns')
     return daily_df
 
 
@@ -145,8 +140,8 @@ def _prepare_database_dataframe(config: dict, paths: dict, logger: logging.Logge
     """Load and prepare the database DataFrame with filters and transformations."""
     if logger is None:
         logger = logging.getLogger('data_pipeline.integrate')
-    logger.info('')
-    logger.info('--- Preparing Database DataFrame ---')
+
+    logger.info('Loading 0031 database...')
     start_time = time.time()
 
     # Define mirror pairs
@@ -160,6 +155,8 @@ def _prepare_database_dataframe(config: dict, paths: dict, logger: logging.Logge
         .unique()
         .collect()
     )
+
+    logger.debug(f'  After filters: {len(db_df):,} rows')
 
     # Add mirror column
     db_df_with_mirror = db_df.with_columns(pl.col('Corp Acct').replace_strict(mirror_map, default=None).alias('mirror_Corp Acct'))
@@ -185,8 +182,7 @@ def _prepare_database_dataframe(config: dict, paths: dict, logger: logging.Logge
     )
 
     process_time = time.time() - start_time
-    logger.info(f'Database preparation completed in {process_time:.2f} seconds')
-    logger.info(f'Database DataFrame shape: {db_df.shape}')
+    logger.debug(f'  Database ready: {len(db_df):,} rows, {len(db_df.columns)} columns ({process_time:.2f}s)')
 
     return db_df
 
@@ -258,8 +254,8 @@ def _create_lookup_tables(db_df: pl.DataFrame, logger: logging.Logger | None = N
     """Create various lookup tables from the database DataFrame."""
     if logger is None:
         logger = logging.getLogger('data_pipeline.integrate')
-    logger.info('')
-    logger.info('--- Creating Lookup Tables ---')
+
+    logger.info('Creating lookup tables...')
 
     # PMM mapping tables
     pmm_map_dpn = db_df.select(
@@ -301,9 +297,7 @@ def _create_lookup_tables(db_df: pl.DataFrame, logger: logging.Logger | None = N
     # Vendor detail lookup
     vendor_detail_lookup = db_df.drop('0031_Item Description').unique()
 
-    logger.debug(
-        f'Created {len([pmm_map_dpn, pmm_map_mpn, pmm_to_desc, contract_db_df, vendor_seq_lookup, vendor_detail_lookup])} lookup tables'
-    )
+    logger.debug(f'  Created 6 lookup tables')
 
     return (pmm_map_dpn, pmm_map_mpn, pmm_to_desc, contract_db_df, vendor_seq_lookup, vendor_detail_lookup)
 
@@ -312,8 +306,8 @@ def _enrich_daily_data(daily_df: pl.DataFrame, lookup_tables: tuple, logger: log
     """Enrich daily data with PMM mappings and vendor information."""
     if logger is None:
         logger = logging.getLogger('data_pipeline.integrate')
-    logger.info('')
-    logger.info('--- Enriching Daily Data ---')
+
+    logger.info('Enriching with PMM mappings and vendor data...')
 
     (pmm_map_dpn, pmm_map_mpn, pmm_to_desc, contract_db_df, vendor_seq_lookup, vendor_detail_lookup) = lookup_tables
 
@@ -345,7 +339,7 @@ def _enrich_daily_data(daily_df: pl.DataFrame, lookup_tables: tuple, logger: log
         .drop('plant_prefix', '0031_PMM Item Number', '0031_Corp_Acct_Prefix')
     )
 
-    logger.info(f'Enriched DataFrame shape: {daily_enriched.shape}')
+    logger.debug(f'  Enriched: {len(daily_enriched):,} rows, {len(daily_enriched.columns)} columns')
     return daily_enriched
 
 
@@ -353,8 +347,8 @@ def _add_contract_analysis(df: pl.DataFrame, contract_db_df: pl.DataFrame, logge
     """Add contract-related analysis columns."""
     if logger is None:
         logger = logging.getLogger('data_pipeline.integrate')
-    logger.info('')
-    logger.info('--- Adding Contract Analysis ---')
+
+    logger.debug('Adding contract analysis...')
 
     df = df.with_columns(
         pl.when(
@@ -386,8 +380,8 @@ def _add_reference_mappings(df: pl.DataFrame, config: dict, paths: dict, logger:
     """Add MFN and VN reference mappings."""
     if logger is None:
         logger = logging.getLogger('data_pipeline.integrate')
-    logger.info('')
-    logger.info('--- Adding Reference Mappings ---')
+
+    logger.info('Adding reference mappings...')
 
     # Load reference files
     mfn_ref = pl.read_excel(paths['mfn_mapping_file'], infer_schema_length=config['processing_options']['infer_schema_length'])
@@ -409,6 +403,8 @@ def _add_reference_mappings(df: pl.DataFrame, config: dict, paths: dict, logger:
         how='left',
     )
 
+    logger.debug(f'  Added MFN and VN mappings')
+
     return df
 
 
@@ -419,9 +415,8 @@ def _add_highest_uom_price(df: pl.DataFrame, logger: logging.Logger | None = Non
     """
     if logger is None:
         logger = logging.getLogger('data_pipeline.integrate')
-    logger.info('')
-    logger.info('--- Calculating Highest UOM Price ---')
-    logger.debug('  Converting UOM quantities to Float32...')
+
+    logger.debug('Calculating highest UOM price...')
 
     # Step 1: Cast quantity and price columns to numeric (Float32 to match config)
     df = df.with_columns(
@@ -432,8 +427,6 @@ def _add_highest_uom_price(df: pl.DataFrame, logger: logging.Logger | None = Non
             pl.col('Purchase UOM Price').str.replace_all(',', '').cast(pl.Float32, strict=False),
         ]
     )
-
-    logger.debug('  Finding quantity for Purchase Order Price UOM...')
 
     # Step 2: Find the quantity for the Purchase Order Price UOM
     purchase_qty = (
@@ -449,12 +442,8 @@ def _add_highest_uom_price(df: pl.DataFrame, logger: logging.Logger | None = Non
         .fill_null(1.0)
     )
 
-    logger.debug('  Calculating price per base unit...')
-
     # Step 3: Calculate price per base unit
     price_per_base = pl.col('Purchase UOM Price') / purchase_qty
-
-    logger.debug('  Calculating prices for each UOM level...')
 
     # Step 4: Calculate prices for each UOM level
     base_price = price_per_base
@@ -462,12 +451,8 @@ def _add_highest_uom_price(df: pl.DataFrame, logger: logging.Logger | None = Non
     auom2_price = price_per_base * pl.col('AUOM2 QTY').fill_null(0.0)
     auom3_price = price_per_base * pl.col('AUOM3 QTY').fill_null(0.0)
 
-    logger.debug('  Finding maximum price across all UOMs...')
-
     # Step 5: Find the maximum price across all UOMs
     df = df.with_columns([pl.max_horizontal([base_price, auom1_price, auom2_price, auom3_price]).alias('Highest_UOM_Price')])
-
-    logger.debug('  ✓ Highest_UOM_Price column added')
 
     return df
 
@@ -476,8 +461,8 @@ def _finalize_dataframe(df: pl.DataFrame, logger: logging.Logger | None = None) 
     """Apply final transformations to the DataFrame."""
     if logger is None:
         logger = logging.getLogger('data_pipeline.integrate')
-    logger.info('')
-    logger.info('--- Finalizing DataFrame ---')
+
+    logger.debug('Finalizing DataFrame...')
 
     # Rename for compatibility
     df = df.rename({'PMM': '0031_PMM Item Number'})
@@ -486,8 +471,6 @@ def _finalize_dataframe(df: pl.DataFrame, logger: logging.Logger | None = None) 
     df = df.with_columns(
         [pl.when(pl.len().over(['Source_File', 'Index']) > 1).then(pl.lit('Y')).otherwise(pl.lit('')).alias('Duplicates')]
     )
-
-    logger.debug('  Renamed PMM column and added duplicate flags')
 
     return df
 
@@ -504,7 +487,7 @@ def _save_integrated_output(df: pl.DataFrame, config: dict, paths: dict, logger:
     output_file = output_folder / f'integrated_{timestamp}.parquet'
 
     df.write_parquet(output_file)
-    logger.info(f'Saved integrated output: {output_file.name}')
+    logger.debug(f'Saved: {output_file.name}')
 
     return output_file
 
