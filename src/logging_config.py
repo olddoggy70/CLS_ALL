@@ -33,7 +33,7 @@ def setup_logging(log_folder: Path, console_level: str = 'INFO', file_level: str
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
     file_handler.setLevel(getattr(logging, file_level))
     # Format: timestamp - module name - [source file] - level - message
-    file_formatter = logging.Formatter('%(asctime)s - %(name)-30s - [%(module)s] - %(levelname)-8s - %(message)s')
+    file_formatter = logging.Formatter('%(asctime)s - %(name)s - [%(module)s] - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
 
     # Console handler (brief, no module names)
