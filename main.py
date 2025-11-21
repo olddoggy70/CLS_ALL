@@ -94,7 +94,7 @@ def run_sync_phase(config: dict, paths: dict, logger) -> bool:
         return True
 
     try:
-        process_sync(config, paths, logger)
+        process_sync(config, paths, None)
         return True
     except Exception as e:
         logger.error(f'Phase 0 (Sync) failed: {e}')
@@ -122,7 +122,8 @@ def run_integrate_phase(config: dict, paths: dict, logger) -> bool:
         logger.info('=' * 60)
         logger.info('PHASE 1: INTEGRATION')
         logger.info('=' * 60)
-        success = process_integrate(config, paths, logger)
+        # success = process_integrate(config, paths, logger)
+        success = process_integrate(config, paths, None)
         if not success:
             logger.error('Phase 1 (Integration) failed')
             return False
