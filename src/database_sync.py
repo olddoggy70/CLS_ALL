@@ -10,8 +10,8 @@ import logging
 from pathlib import Path
 
 from .sync_core.orchestrator import update_parquet_if_needed
-from .sync_core.state import get_update_status
-from .sync_core.state import print_status as print_status_internal
+from .sync_core.sync_state import get_update_status
+from .sync_core.sync_state import print_status as print_status_internal
 
 
 def auto_check_and_update(config: dict, paths: dict, logger: logging.Logger | None = None) -> bool:
