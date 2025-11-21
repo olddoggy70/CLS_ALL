@@ -3,76 +3,89 @@ Phase 1: Integration
 Integrate daily files with 0031 baseline database
 """
 
+import logging
 import time
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
 
 
-def process_integrate(config: dict, paths: dict) -> bool:
+def process_integrate(config: dict, paths: dict, logger: logging.Logger | None = None) -> bool:
     """
     Phase 1: Integrate daily files with 0031 baseline
 
     Args:
         config: Configuration dict
         paths: Paths dict
+        logger: Logger instance for output
 
     Returns:
         True if processing succeeded
     """
-    print('\n' + '=' * 60)
-    print('PHASE 1: INTEGRATION')
-    print('Integrate daily files with 0031 baseline')
-    print('=' * 60)
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+
+    logger.info('')
+    logger.info('=' * 60)
+    logger.info('PHASE 1: INTEGRATION')
+    logger.info('Integrate daily files with 0031 baseline')
+    logger.info('=' * 60)
 
     try:
         # Process daily data
-        daily_df = _process_daily_data(config, paths)
+        daily_df = _process_daily_data(config, paths, logger)
 
         # Prepare database DataFrame
-        db_df = _prepare_database_dataframe(config, paths)
+        db_df = _prepare_database_dataframe(config, paths, logger)
 
         # Create lookup tables
-        lookup_tables = _create_lookup_tables(db_df)
+        lookup_tables = _create_lookup_tables(db_df, logger)
 
         # Enrich daily data
-        enriched_df = _enrich_daily_data(daily_df, lookup_tables)
+        enriched_df = _enrich_daily_data(daily_df, lookup_tables, logger)
 
         # Add contract analysis
-        enriched_df = _add_contract_analysis(enriched_df)
+        enriched_df = _add_contract_analysis(enriched_df, lookup_tables[3], logger)
 
         # Add reference mappings
-        enriched_df = _add_reference_mappings(enriched_df, config, paths)
+        enriched_df = _add_reference_mappings(enriched_df, config, paths, logger)
 
         # Add highest UoM Price
-        enriched_df = _add_highest_uom_price(enriched_df)
-        
+        enriched_df = _add_highest_uom_price(enriched_df, logger)
+
         # Finalize DataFrame
-        final_df = _finalize_dataframe(enriched_df)
+        final_df = _finalize_dataframe(enriched_df, logger)
 
         # Save integrated output
-        output_path = _save_integrated_output(final_df, config, paths)
+        output_path = _save_integrated_output(final_df, config, paths, logger)
 
-        print(f'\n✓ Phase 1 completed successfully')
-        print(f'  Output: {output_path}')
-        print(f'  Shape: {final_df.shape}')
+        logger.info(f'\n✓ Phase 1 completed successfully')
+        logger.info(f'  Output: {output_path}')
+        logger.info(f'  Shape: {final_df.shape}')
 
         return True
 
     except Exception as e:
-        print(f'\n!!! Phase 1 failed: {e}')
+        logger.error(f'\n!!! Phase 1 failed: {e}')
+        import traceback
+
+        logger.error(traceback.format_exc())
         raise
 
 
-def _process_daily_data(config: dict, paths: dict) -> pl.DataFrame:
+def _process_daily_data(config: dict, paths: dict, logger: logging.Logger | None = None) -> pl.DataFrame:
     """Process daily Excel files."""
-    print('\n--- Processing Daily Data ---')
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+    logger.info('')
+    logger.info('--- Processing Daily Data ---')
 
     daily_files = list(paths['daily_files_folder'].glob('*.xlsx'))
 
     if not daily_files:
         raise ValueError('No daily Excel files found in daily_files folder')
-    print(f'Found {len(daily_files)} daily file(s)')
+    logger.info(f'Found {len(daily_files)} daily file(s)')
 
     # Process each file separately to add source tracking and per file index
     df_list = []
@@ -82,9 +95,9 @@ def _process_daily_data(config: dict, paths: dict) -> pl.DataFrame:
             df = df.with_columns(pl.lit(file_path.stem).alias('Source_File'))
             df = df.with_row_index('Index', offset=1)
             df_list.append(df)
-            print(f'  {file_path.name} - {df.shape}')
+            logger.debug(f'  {file_path.name} - {df.shape}')
         except Exception as e:
-            print(f'  Failed to read {file_path.name}: {e}')
+            logger.warning(f'  Failed to read {file_path.name}: {e}')
 
     if not df_list:
         raise ValueError('Failed to read any Excel files')
@@ -92,18 +105,21 @@ def _process_daily_data(config: dict, paths: dict) -> pl.DataFrame:
     daily_df = pl.concat(df_list)
 
     # Convert date columns
-    daily_df = _convert_date_columns(daily_df, config['data_processing']['daily_date_columns'])
+    daily_df = _convert_date_columns(daily_df, config['data_processing']['daily_date_columns'], logger)
 
     # Move Source_file into the first column
     daily_df = daily_df.select(['Source_File'] + [col for col in daily_df.columns if col != 'Source_File'])
 
-    print(f'Daily DataFrame shape: {daily_df.shape}')
+    logger.info(f'Daily DataFrame shape: {daily_df.shape}')
     return daily_df
 
 
-def _convert_date_columns(df: pl.DataFrame, date_columns: list[str]) -> pl.DataFrame:
+def _convert_date_columns(df: pl.DataFrame, date_columns: list[str], logger: logging.Logger | None = None) -> pl.DataFrame:
     """Convert string columns to date format using multiple date patterns."""
-    print('Converting date columns...')
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+
+    logger.debug('Converting date columns...')
 
     df = df.with_columns(
         [
@@ -125,9 +141,12 @@ def _convert_date_columns(df: pl.DataFrame, date_columns: list[str]) -> pl.DataF
     return df
 
 
-def _prepare_database_dataframe(config: dict, paths: dict) -> pl.DataFrame:
+def _prepare_database_dataframe(config: dict, paths: dict, logger: logging.Logger | None = None) -> pl.DataFrame:
     """Load and prepare the database DataFrame with filters and transformations."""
-    print('\n--- Preparing Database DataFrame ---')
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+    logger.info('')
+    logger.info('--- Preparing Database DataFrame ---')
     start_time = time.time()
 
     # Define mirror pairs
@@ -166,18 +185,21 @@ def _prepare_database_dataframe(config: dict, paths: dict) -> pl.DataFrame:
     )
 
     process_time = time.time() - start_time
-    print(f'Database preparation completed in {process_time:.2f} seconds')
-    print(f'Database DataFrame shape: {db_df.shape}')
+    logger.info(f'Database preparation completed in {process_time:.2f} seconds')
+    logger.info(f'Database DataFrame shape: {db_df.shape}')
 
     return db_df
 
 
-def _collapse_pmm_candidates(df: pl.DataFrame) -> pl.DataFrame:
+def _collapse_pmm_candidates(df: pl.DataFrame, logger: logging.Logger | None = None) -> pl.DataFrame:
     """
     Collapse multiple PMM candidates per index, showing combined sources.
     Removes blank/null PMM rows if the same index has non-blank PMM values.
     """
-    print('Collapsing PMM candidates...')
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+
+    logger.debug('Collapsing PMM candidates...')
 
     # Ensure PMM columns are same type (str)
     df = df.with_columns([pl.col('PMM_by_DPN').cast(pl.Utf8), pl.col('PMM_by_MPN').cast(pl.Utf8)])
@@ -232,9 +254,12 @@ def _collapse_pmm_candidates(df: pl.DataFrame) -> pl.DataFrame:
     return result
 
 
-def _create_lookup_tables(db_df: pl.DataFrame) -> tuple:
+def _create_lookup_tables(db_df: pl.DataFrame, logger: logging.Logger | None = None) -> tuple:
     """Create various lookup tables from the database DataFrame."""
-    print('\n--- Creating Lookup Tables ---')
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+    logger.info('')
+    logger.info('--- Creating Lookup Tables ---')
 
     # PMM mapping tables
     pmm_map_dpn = db_df.select(
@@ -276,16 +301,19 @@ def _create_lookup_tables(db_df: pl.DataFrame) -> tuple:
     # Vendor detail lookup
     vendor_detail_lookup = db_df.drop('0031_Item Description').unique()
 
-    print(
+    logger.debug(
         f'Created {len([pmm_map_dpn, pmm_map_mpn, pmm_to_desc, contract_db_df, vendor_seq_lookup, vendor_detail_lookup])} lookup tables'
     )
 
     return (pmm_map_dpn, pmm_map_mpn, pmm_to_desc, contract_db_df, vendor_seq_lookup, vendor_detail_lookup)
 
 
-def _enrich_daily_data(daily_df: pl.DataFrame, lookup_tables: tuple) -> pl.DataFrame:
+def _enrich_daily_data(daily_df: pl.DataFrame, lookup_tables: tuple, logger: logging.Logger | None = None) -> pl.DataFrame:
     """Enrich daily data with PMM mappings and vendor information."""
-    print('\n--- Enriching Daily Data ---')
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+    logger.info('')
+    logger.info('--- Enriching Daily Data ---')
 
     (pmm_map_dpn, pmm_map_mpn, pmm_to_desc, contract_db_df, vendor_seq_lookup, vendor_detail_lookup) = lookup_tables
 
@@ -295,7 +323,7 @@ def _enrich_daily_data(daily_df: pl.DataFrame, lookup_tables: tuple) -> pl.DataF
     ).join(pmm_map_mpn.rename({'0031_PMM Item Number': 'PMM_by_MPN'}), on='Manufacturer Part Number', how='left')
 
     # Collapse PMM candidates
-    daily_enriched = _collapse_pmm_candidates(daily_enriched)
+    daily_enriched = _collapse_pmm_candidates(daily_enriched, logger)
 
     # Add vendor information
     daily_enriched = (
@@ -317,13 +345,16 @@ def _enrich_daily_data(daily_df: pl.DataFrame, lookup_tables: tuple) -> pl.DataF
         .drop('plant_prefix', '0031_PMM Item Number', '0031_Corp_Acct_Prefix')
     )
 
-    print(f'Enriched DataFrame shape: {daily_enriched.shape}')
+    logger.info(f'Enriched DataFrame shape: {daily_enriched.shape}')
     return daily_enriched
 
 
-def _add_contract_analysis(df: pl.DataFrame) -> pl.DataFrame:
+def _add_contract_analysis(df: pl.DataFrame, contract_db_df: pl.DataFrame, logger: logging.Logger | None = None) -> pl.DataFrame:
     """Add contract-related analysis columns."""
-    print('\n--- Adding Contract Analysis ---')
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+    logger.info('')
+    logger.info('--- Adding Contract Analysis ---')
 
     df = df.with_columns(
         pl.when(
@@ -351,9 +382,12 @@ def _add_contract_analysis(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 
-def _add_reference_mappings(df: pl.DataFrame, config: dict, paths: dict) -> pl.DataFrame:
+def _add_reference_mappings(df: pl.DataFrame, config: dict, paths: dict, logger: logging.Logger | None = None) -> pl.DataFrame:
     """Add MFN and VN reference mappings."""
-    print('\n--- Adding Reference Mappings ---')
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+    logger.info('')
+    logger.info('--- Adding Reference Mappings ---')
 
     # Load reference files
     mfn_ref = pl.read_excel(paths['mfn_mapping_file'], infer_schema_length=config['processing_options']['infer_schema_length'])
@@ -377,20 +411,30 @@ def _add_reference_mappings(df: pl.DataFrame, config: dict, paths: dict) -> pl.D
 
     return df
 
-def _add_highest_uom_price(df: pl.DataFrame) -> pl.DataFrame:
+
+def _add_highest_uom_price(df: pl.DataFrame, logger: logging.Logger | None = None) -> pl.DataFrame:
     """
     Adds a column 'Highest_UOM_Price' to the dataframe based on UOM conversions.
-    Handles string columns by casting to numeric types.
+    Handles string columns by casting to Float32 (matching config.json type_optimization).
     """
-    print('Adding highest_uom_price...')
-    # Step 1: Cast quantity and price columns to numeric (Float64)
-    df = df.with_columns([
-        pl.col('AUOM1 QTY').str.replace_all(',','').cast(pl.Float64, strict=False),
-        pl.col('AUOM2 QTY').str.replace_all(',','').cast(pl.Float64, strict=False),
-        pl.col('AUOM3 QTY').str.replace_all(',','').cast(pl.Float64, strict=False),
-        pl.col('Purchase UOM Price').str.replace_all(',','').cast(pl.Float64, strict=False)
-    ])
-    
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+    logger.info('')
+    logger.info('--- Calculating Highest UOM Price ---')
+    logger.debug('  Converting UOM quantities to Float32...')
+
+    # Step 1: Cast quantity and price columns to numeric (Float32 to match config)
+    df = df.with_columns(
+        [
+            pl.col('AUOM1 QTY').str.replace_all(',', '').cast(pl.Float32, strict=False),
+            pl.col('AUOM2 QTY').str.replace_all(',', '').cast(pl.Float32, strict=False),
+            pl.col('AUOM3 QTY').str.replace_all(',', '').cast(pl.Float32, strict=False),
+            pl.col('Purchase UOM Price').str.replace_all(',', '').cast(pl.Float32, strict=False),
+        ]
+    )
+
+    logger.debug('  Finding quantity for Purchase Order Price UOM...')
+
     # Step 2: Find the quantity for the Purchase Order Price UOM
     purchase_qty = (
         pl.when(pl.col('Purchase Order Price Unit of Measure') == pl.col('Base Unit of Measure'))
@@ -404,33 +448,36 @@ def _add_highest_uom_price(df: pl.DataFrame) -> pl.DataFrame:
         .otherwise(pl.lit(1.0))
         .fill_null(1.0)
     )
-    
+
+    logger.debug('  Calculating price per base unit...')
+
     # Step 3: Calculate price per base unit
     price_per_base = pl.col('Purchase UOM Price') / purchase_qty
-    
+
+    logger.debug('  Calculating prices for each UOM level...')
+
     # Step 4: Calculate prices for each UOM level
     base_price = price_per_base
     auom1_price = price_per_base * pl.col('AUOM1 QTY').fill_null(0.0)
     auom2_price = price_per_base * pl.col('AUOM2 QTY').fill_null(0.0)
     auom3_price = price_per_base * pl.col('AUOM3 QTY').fill_null(0.0)
-    
+
+    logger.debug('  Finding maximum price across all UOMs...')
+
     # Step 5: Find the maximum price across all UOMs
-    df = df.with_columns([
-        pl.max_horizontal([
-            base_price,
-            auom1_price,
-            auom2_price,
-            auom3_price
-        ]).alias('Highest_UOM_Price')
-    ])
-    
+    df = df.with_columns([pl.max_horizontal([base_price, auom1_price, auom2_price, auom3_price]).alias('Highest_UOM_Price')])
+
+    logger.debug('  ✓ Highest_UOM_Price column added')
+
     return df
 
 
-
-def _finalize_dataframe(df: pl.DataFrame) -> pl.DataFrame:
+def _finalize_dataframe(df: pl.DataFrame, logger: logging.Logger | None = None) -> pl.DataFrame:
     """Apply final transformations to the DataFrame."""
-    print('\n--- Finalizing DataFrame ---')
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
+    logger.info('')
+    logger.info('--- Finalizing DataFrame ---')
 
     # Rename for compatibility
     df = df.rename({'PMM': '0031_PMM Item Number'})
@@ -440,12 +487,15 @@ def _finalize_dataframe(df: pl.DataFrame) -> pl.DataFrame:
         [pl.when(pl.len().over(['Source_File', 'Index']) > 1).then(pl.lit('Y')).otherwise(pl.lit('')).alias('Duplicates')]
     )
 
+    logger.debug('  Renamed PMM column and added duplicate flags')
+
     return df
 
 
-def _save_integrated_output(df: pl.DataFrame, config: dict, paths: dict) -> Path:
+def _save_integrated_output(df: pl.DataFrame, config: dict, paths: dict, logger: logging.Logger | None = None) -> Path:
     """Save integrated output to parquet."""
-    from datetime import datetime
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.integrate')
 
     output_folder = paths['integrated_output']
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -454,7 +504,7 @@ def _save_integrated_output(df: pl.DataFrame, config: dict, paths: dict) -> Path
     output_file = output_folder / f'integrated_{timestamp}.parquet'
 
     df.write_parquet(output_file)
-    print(f'Saved integrated output: {output_file.name}')
+    logger.info(f'Saved integrated output: {output_file.name}')
 
     return output_file
 
