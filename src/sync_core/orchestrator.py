@@ -16,9 +16,8 @@ from .backup import (
     cleanup_old_backups,  # All modes
     create_backup,  # Fallback mode
 )
-from .files import (
+from .file_discovery import (
     check_for_changes,  # Fallback mode
-    cleanup_old_archives,  # Incremental mode
     get_excel_files,  # Fallback mode
     get_incremental_files,  # Incremental mode
     get_weekly_full_files,  # Weekly full mode
@@ -36,7 +35,10 @@ from .quality import (
 from .reporting import save_combined_report
 
 # From sync_core (16 total imports)
-from .state import load_state, save_state
+from .sync_state import load_state, save_state
+
+# Import archive utilities from utils
+from ..utils.file_operations import cleanup_old_archives
 
 
 def _clean_change_summary_for_state(change_summary: dict | None) -> dict | None:

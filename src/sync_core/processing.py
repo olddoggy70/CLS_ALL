@@ -12,8 +12,11 @@ import polars as pl
 from .backup import create_backup
 
 # Import from other sync_core modules
-from .files import archive_file, cleanup_old_full_backups, get_excel_files
+from .file_discovery import cleanup_old_full_backups, get_excel_files
 from .quality import track_row_changes, validate_parquet_data
+
+# Import from utils
+from ..utils.file_operations import archive_file
 
 
 def process_excel_files(
