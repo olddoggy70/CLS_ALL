@@ -10,9 +10,9 @@
     "daily_archive_folder": "data/daily_files/archive",
     "output_folder": "data/output",
     "test_csv": "test.csv",
-    "integrated_output": "data/integrated",
-    "classified_output": "data/classified",
-    "exports_output": "data/exports",
+    "integrated_output": "data/output/integrated",
+    "classified_output": "data/output/classified",
+    "exports_output": "data/output/exports",
     "reference_files": {
       "mfn_mapping": "data/ref_files/MFN Mapping.xlsx",
       "vn_mapping": "data/ref_files/VN Mapping.xlsx",
@@ -26,7 +26,11 @@
     },
     "integration": {
       "enabled": true,
-      "description": "Integrate daily files with 0031 baseline"
+      "description": "Integrate daily files with 0031 baseline",
+      "output_format": "xlsx",
+      "date_column": "Date and Time Stamp",
+      "date_format": "%Y-%b-%d %I:%M:%S %p",
+      "filename_prefix": "integrated"
     },
     "classification": {
       "enabled": true,
@@ -75,7 +79,11 @@
   },
   "data_processing": {
     "filter_rules": {
-      "exclude_corp_acct": ["0202", "0205", "0502"],
+      "exclude_corp_acct": [
+        "0202",
+        "0205",
+        "0502"
+      ],
       "exclude_vendor_prefix": []
     },
     "date_columns": [
@@ -123,7 +131,6 @@
       "MISC4",
       "Tax Jurisdiction",
       "Item Create Date",
-      "Item Update Date",
       "Supply Type Code"
     ]
   },
@@ -139,6 +146,7 @@
   "logging": {
     "console_level": "INFO",
     "file_level": "DEBUG",
+    "enable_timing": true,
     "log_folder": "logs",
     "retention_days": 30
   }
