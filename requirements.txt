@@ -8,3 +8,6 @@ fastexcel>=0.10.0
 
 # System Utilities
 psutil>=5.9.0
+
+# Testing
+pytest>=7.0.0
