@@ -16,11 +16,8 @@ import os
 import sys
 import time
 from pathlib import Path
+import psutil
 
-try:
-    import psutil
-except ImportError:
-    psutil = None
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -312,6 +309,7 @@ def main():
     command = sys.argv[1].lower()
 
     logger.info(f'Command: {command}')
+    start_time = time.time()
     logger.info(f'Time: {time.strftime("%Y-%m-%d %H:%M:%S")}')
 
     try:
@@ -360,8 +358,9 @@ def main():
             print_usage()
             sys.exit(1)
 
+        elapsed_time = time.time() - start_time
         logger.info('')
-        logger.info('=== Pipeline Command Completed ===')
+        logger.info(f'=== Pipeline Command Completed in {elapsed_time:.2f} seconds ===')
 
     except KeyboardInterrupt:
         logger.warning('Process interrupted by user')
