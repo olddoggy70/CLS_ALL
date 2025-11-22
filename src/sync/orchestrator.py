@@ -14,12 +14,12 @@ from src.sync.file_discovery import (
     get_incremental_files,
     get_weekly_full_files,
 )
-from src.sync.processing import (
-    apply_categorical_types,
+from src.sync.core import (
     apply_incremental_update,
     process_weekly_full_backup,
     rebuild_parquet,
 )
+from src.sync.transformation import apply_categorical_types
 from src.sync.quality import track_row_changes, print_change_summary
 from src.sync.reporting import save_combined_report
 from src.sync.sync_state import load_state, save_state
