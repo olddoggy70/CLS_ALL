@@ -9,14 +9,15 @@ from pathlib import Path
 
 import polars as pl
 
+from ..constants import Columns0031
+
+# Import from utils
+from ..utils.file_operations import archive_file
 from .backup import create_backup
 
 # Import from other sync_core modules
 from .file_discovery import cleanup_old_full_backups, get_excel_files
 from .quality import track_row_changes, validate_parquet_data
-
-# Import from utils
-from ..utils.file_operations import archive_file
 
 
 def process_excel_files(
@@ -24,7 +25,7 @@ def process_excel_files(
 ) -> pl.DataFrame | None:
     """Process multiple Excel files and concatenate them into a single DataFrame"""
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.processing')
+        logger = logging.getLogger('data_pipeline.sync')
 
     logger.info(f'Processing {len(file_paths)} Excel files...')
     df_list = []
@@ -54,7 +55,7 @@ def process_excel_files(
 def clean_dataframe(df: pl.DataFrame, logger: logging.Logger | None = None) -> pl.DataFrame:
     """Clean DataFrame by trimming strings, converting blanks to None, and trimming column names"""
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.processing')
+        logger = logging.getLogger('data_pipeline.sync')
 
     logger.debug('Cleaning DataFrame...')
 
@@ -85,7 +86,7 @@ def convert_and_optimize_columns(df: pl.DataFrame, config: dict, logger: logging
         DataFrame with converted dates and optimized numeric types
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.processing')
+        logger = logging.getLogger('data_pipeline.sync')
 
     logger.debug('Converting dates and optimizing data types...')
 
@@ -125,6 +126,7 @@ def convert_and_optimize_columns(df: pl.DataFrame, config: dict, logger: logging
 
     return df
 
+
 def apply_categorical_types(df: pl.DataFrame, config: dict) -> pl.DataFrame:
     """
     Apply categorical types to DataFrame for in-memory performance
@@ -150,34 +152,38 @@ def apply_categorical_types(df: pl.DataFrame, config: dict) -> pl.DataFrame:
     return df
 
 
-def convert_date_columns(df: pl.DataFrame, date_columns: list[str], logger: logging.Logger | None = None) -> pl.DataFrame:
+def apply_filters(df: pl.DataFrame, config: dict, logger: logging.Logger | None = None) -> pl.DataFrame:
     """
-    DEPRECATED: Use convert_and_optimize_columns() instead
-    Convert string columns to date format using multiple date patterns
+    Apply row filtering based on configuration rules.
 
-    This function is kept for backward compatibility only.
+    Args:
+        df: DataFrame to filter
+        config: Configuration dictionary containing 'filter_rules'
+        logger: Logger instance
+
+    Returns:
+        Filtered DataFrame
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.processing')
+        logger = logging.getLogger('data_pipeline.sync')
 
-    logger.debug('Converting date columns...')
+    filter_rules = config.get('filter_rules', {})
+    exclude_corp_acct = filter_rules.get('exclude_corp_acct', [])
 
-    df = df.with_columns(
-        [
-            (
-                pl.when(pl.col(col).str.to_date('%Y-%m-%d', strict=False).is_not_null())
-                .then(pl.col(col).str.to_date('%Y-%m-%d', strict=False))
-                .when(pl.col(col).str.to_date('%m/%d/%Y', strict=False).is_not_null())
-                .then(pl.col(col).str.to_date('%m/%d/%Y', strict=False))
-                .when(pl.col(col).str.to_date('%Y-%b-%d', strict=False).is_not_null())
-                .then(pl.col(col).str.to_date('%Y-%b-%d', strict=False))
-                .otherwise(None)
-                .alias(col)
-            )
-            for col in date_columns
-            if col in df.columns
-        ]
-    )
+    if not exclude_corp_acct:
+        return df
+
+    # Filter by Corp Acct
+    if Columns0031.CORP_ACCT in df.columns:
+        initial_count = len(df)
+
+        # Ensure Corp Acct is string for comparison
+        df = df.filter(~pl.col(Columns0031.CORP_ACCT).cast(pl.Utf8).is_in(exclude_corp_acct))
+
+        removed_count = initial_count - len(df)
+
+        if removed_count > 0:
+            logger.debug(f'  Removed {removed_count} rows with Corp Acct in {exclude_corp_acct}')
 
     return df
 
@@ -217,7 +223,7 @@ def apply_incremental_update(
         Tuple of (updated_df, validation_results, change_results)
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.processing')
+        logger = logging.getLogger('data_pipeline.sync')
 
     # Normalize input: single file → list with 1 file
     if isinstance(incremental_files, Path):
@@ -281,8 +287,17 @@ def apply_incremental_update(
     data_config = config.get('data_processing', {})
     combined_incremental_df = convert_and_optimize_columns(combined_incremental_df, data_config)
 
+    # Apply filters (incremental only)
+    combined_incremental_df = apply_filters(combined_incremental_df, data_config, logger)
+
     # Validate required unique key columns
-    unique_keys = ['PMM Item Number', 'Corp Acct', 'Vendor Code', 'Additional Cost Centre', 'Additional GL Account']
+    unique_keys = [
+        Columns0031.PMM_ITEM_NUMBER,
+        Columns0031.CORP_ACCT,
+        Columns0031.VENDOR_CODE,
+        Columns0031.ADD_COST_CENTRE,
+        Columns0031.ADD_GL_ACCOUNT,
+    ]
     if not all(col in current_df.columns for col in unique_keys):
         raise ValueError(f'Current parquet missing required columns: {unique_keys}')
 
@@ -322,11 +337,11 @@ def apply_incremental_update(
         combined_with_keys = combined_incremental_df.with_columns(
             pl.concat_str(
                 [
-                    pl.col('PMM Item Number').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                    pl.col('Corp Acct').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                    pl.col('Vendor Code').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                    pl.col('Additional Cost Centre').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                    pl.col('Additional GL Account').cast(pl.Utf8).fill_null('').str.strip_chars(),
+                    pl.col(Columns0031.PMM_ITEM_NUMBER).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                    pl.col(Columns0031.CORP_ACCT).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                    pl.col(Columns0031.VENDOR_CODE).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                    pl.col(Columns0031.ADD_COST_CENTRE).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                    pl.col(Columns0031.ADD_GL_ACCOUNT).cast(pl.Utf8).fill_null('').str.strip_chars(),
                 ],
                 separator='|',
             ).alias('_temp_key')
@@ -334,12 +349,12 @@ def apply_incremental_update(
 
         duplicate_cols = [
             pl.count().alias('occurrence_count'),
-            pl.col('PMM Item Number').first().alias('PMM Item Number'),
-            pl.col('Corp Acct').first().alias('Corp Acct'),
-            pl.col('Vendor Code').first().alias('Vendor Code'),
-            pl.col('Additional Cost Centre').first().alias('Additional Cost Centre'),
-            pl.col('Additional GL Account').first().alias('Additional GL Account'),
-            pl.col('Item Update Date').alias('Update_Dates'),
+            pl.col(Columns0031.PMM_ITEM_NUMBER).first().alias(Columns0031.PMM_ITEM_NUMBER),
+            pl.col(Columns0031.CORP_ACCT).first().alias(Columns0031.CORP_ACCT),
+            pl.col(Columns0031.VENDOR_CODE).first().alias(Columns0031.VENDOR_CODE),
+            pl.col(Columns0031.ADD_COST_CENTRE).first().alias(Columns0031.ADD_COST_CENTRE),
+            pl.col(Columns0031.ADD_GL_ACCOUNT).first().alias(Columns0031.ADD_GL_ACCOUNT),
+            pl.col(Columns0031.ITEM_UPDATE_DATE).alias('Update_Dates'),
         ]
 
         if 'Default UOM Price' in combined_incremental_df.columns:
@@ -365,12 +380,12 @@ def apply_incremental_update(
                 .drop('_temp_key')
                 .sort(
                     [
-                        'PMM Item Number',
-                        'Corp Acct',
-                        'Vendor Code',
-                        'Additional Cost Centre',
-                        'Additional GL Account',
-                        'Item Update Date',
+                        Columns0031.PMM_ITEM_NUMBER,
+                        Columns0031.CORP_ACCT,
+                        Columns0031.VENDOR_CODE,
+                        Columns0031.ADD_COST_CENTRE,
+                        Columns0031.ADD_GL_ACCOUNT,
+                        Columns0031.ITEM_UPDATE_DATE,
                     ]
                 )
             )
@@ -432,8 +447,8 @@ def apply_incremental_update(
     # Deduplicate: Keep last occurrence if same item appears in multiple files
     logger.info('Deduplicating for database merge...')
 
-    if 'Item Update Date' in combined_incremental_df.columns:
-        combined_incremental_df = combined_incremental_df.sort('Item Update Date')
+    if Columns0031.ITEM_UPDATE_DATE in combined_incremental_df.columns:
+        combined_incremental_df = combined_incremental_df.sort(Columns0031.ITEM_UPDATE_DATE)
 
     combined_incremental_df = combined_incremental_df.unique(subset=unique_keys, keep='last')
 
@@ -450,11 +465,11 @@ def apply_incremental_update(
     current_df = current_df.with_columns(
         pl.concat_str(
             [
-                pl.col('PMM Item Number').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                pl.col('Corp Acct').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                pl.col('Vendor Code').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                pl.col('Additional Cost Centre').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                pl.col('Additional GL Account').cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.PMM_ITEM_NUMBER).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.CORP_ACCT).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.VENDOR_CODE).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.ADD_COST_CENTRE).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.ADD_GL_ACCOUNT).cast(pl.Utf8).fill_null('').str.strip_chars(),
             ],
             separator='|',
         ).alias('_merge_key')
@@ -463,11 +478,11 @@ def apply_incremental_update(
     combined_incremental_df = combined_incremental_df.with_columns(
         pl.concat_str(
             [
-                pl.col('PMM Item Number').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                pl.col('Corp Acct').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                pl.col('Vendor Code').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                pl.col('Additional Cost Centre').cast(pl.Utf8).fill_null('').str.strip_chars(),
-                pl.col('Additional GL Account').cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.PMM_ITEM_NUMBER).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.CORP_ACCT).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.VENDOR_CODE).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.ADD_COST_CENTRE).cast(pl.Utf8).fill_null('').str.strip_chars(),
+                pl.col(Columns0031.ADD_GL_ACCOUNT).cast(pl.Utf8).fill_null('').str.strip_chars(),
             ],
             separator='|',
         ).alias('_merge_key')
@@ -534,6 +549,10 @@ def apply_incremental_update(
     logger.debug(f'  Final row count: {final_row_count:,}')
     logger.debug(f'  Net change: {net_change:+,} rows')
 
+    # Apply filters to final merged dataframe (cleans history)
+    logger.debug('Applying filters to final database...')
+    updated_df = apply_filters(updated_df, data_config, logger)
+
     # Write updated parquet ONCE
     logger.info(f'Writing updated parquet: {db_file.name}')
     updated_df.write_parquet(db_file)
@@ -577,7 +596,7 @@ def rebuild_parquet(
         Tuple of (DataFrame, validation_results)
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.processing')
+        logger = logging.getLogger('data_pipeline.sync')
 
     logger.info('=== Rebuilding Parquet File ===')
     start_time = time.time()
@@ -596,6 +615,7 @@ def rebuild_parquet(
         final_df = clean_dataframe(final_df)
         data_config = config.get('data_processing', {})
         final_df = convert_and_optimize_columns(final_df, data_config)
+        final_df = apply_filters(final_df, data_config, logger)
 
     logger.debug(f'Final DataFrame shape: {final_df.shape}')
     logger.info(f'Writing to: {db_file}')
@@ -626,7 +646,7 @@ def process_weekly_full_backup(
         Tuple of (DataFrame, validation_results)
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.processing')
+        logger = logging.getLogger('data_pipeline.sync')
 
     logger.info('=== Processing Weekly Full Backup ===')
     logger.info(f'Weekly full file: {weekly_file.name}')
@@ -649,6 +669,7 @@ def process_weekly_full_backup(
         final_df = clean_dataframe(final_df)
         data_config = config.get('data_processing', {})
         final_df = convert_and_optimize_columns(final_df, data_config)
+        final_df = apply_filters(final_df, data_config, logger)
 
         # Write to parquet
         logger.info(f'Writing to: {db_file}')

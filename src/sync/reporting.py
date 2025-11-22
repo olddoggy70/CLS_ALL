@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import polars as pl
+from ..constants import Columns0031
 
 
 def save_combined_report(
@@ -31,7 +32,7 @@ def save_combined_report(
         Dictionary with paths to generated report files
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.reporting')
+        logger = logging.getLogger('data_pipeline.sync')
 
     timestamp = datetime.now().strftime('%Y-%m-%d')
 
@@ -130,7 +131,7 @@ def generate_markdown_report(validation_results: dict, change_results: dict, pro
                 if date_breakdown is not None and len(date_breakdown) > 0:
                     report.append('\n**Breakdown by Update Date:**\n')
                     for row in date_breakdown.iter_rows(named=True):
-                        update_date = row['Item Update Date']
+                        update_date = row[Columns0031.ITEM_UPDATE_DATE]
                         row_count = row['row_count']
                         report.append(f'- {update_date}: {row_count:,} rows\n')
                 else:
@@ -164,7 +165,7 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         logger: Logger instance
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.reporting')
+        logger = logging.getLogger('data_pipeline.sync')
 
     # Import xlsxwriter for multi-sheet Excel files
     import xlsxwriter
@@ -282,12 +283,12 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
             # Transform from field-level to record-level format
             # Original format: Each row is one field of a record
             # Target format: Each row is one complete record with all fields as columns
-
-            key_cols = ['PMM Item Number', 'Corp Acct', 'Vendor Code', 'Additional Cost Centre', 'Additional GL Account']
+            
+            key_cols = [Columns0031.PMM_ITEM_NUMBER, Columns0031.CORP_ACCT, Columns0031.VENDOR_CODE, Columns0031.ADD_COST_CENTRE, Columns0031.ADD_GL_ACCOUNT]
 
             # Filter out rows where 'Column' matches any of the index columns (they're already in the index)
             # This includes the 5 key columns + Item Update Date
-            index_cols = [*key_cols, 'Item Update Date']
+            index_cols = [*key_cols, Columns0031.ITEM_UPDATE_DATE]
             new_rows_filtered = new_rows_df.filter(~pl.col('Column').is_in(index_cols))
 
             # Only create the sheet if we have data after filtering
@@ -358,12 +359,12 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         blank_catalogue_df = validation_results.get('blank_vendor_catalogue_df')
         if blank_catalogue_df is not None and len(blank_catalogue_df) > 0:
             # Get PMM Item Numbers from the dataframe
-            pmm_items = blank_catalogue_df.get_column('PMM Item Number').to_list()
+            pmm_items = blank_catalogue_df.get_column(Columns0031.PMM_ITEM_NUMBER).to_list()
             for pmm_item in pmm_items[:100]:  # Limit to first 100
                 validation_issues.append(
                     {
                         'Issue Type': 'Unexpected Blank Vendor Catalogue',
-                        'PMM Item Number': pmm_item,
+                        Columns0031.PMM_ITEM_NUMBER: pmm_item,
                         'Details': 'Vendor Catalogue is blank but not in permitted list',
                     }
                 )
@@ -375,10 +376,10 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
                 validation_issues.append(
                     {
                         'Issue Type': 'Inconsistent Vendor Catalogue',
-                        'PMM Item Number': item.get('pmm_item'),
-                        'Vendor Code': item.get('vendor_code'),
+                        Columns0031.PMM_ITEM_NUMBER: item.get('pmm_item'),
+                        Columns0031.VENDOR_CODE: item.get('vendor_code'),
                         'Vendor Seq': item.get('vendor_seq'),
-                        'Corp Acct': item.get('corp_acct'),
+                        Columns0031.CORP_ACCT: item.get('corp_acct'),
                         'Details': f'Found {item.get("unique_catalogues", 0)} different catalogues',
                         'Vendor Catalogue': item.get('catalogue_values'),
                     }
@@ -407,7 +408,7 @@ def _write_dataframe_to_worksheet(workbook, df: pl.DataFrame, sheet_name: str, l
         logger: Logger instance
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.reporting')
+        logger = logging.getLogger('data_pipeline.sync')
 
     worksheet = workbook.add_worksheet(sheet_name[:31])  # Excel sheet name limit is 31 chars
 

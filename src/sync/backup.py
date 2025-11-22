@@ -7,7 +7,7 @@ from pathlib import Path
 def create_backup(db_file: Path, backup_folder: Path, logger: logging.Logger | None = None) -> Path | None:
     """Create timestamped backup of current parquet file"""
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.backup')
+        logger = logging.getLogger('data_pipeline.sync')
 
     if not db_file.exists():
         logger.debug('No existing parquet file to backup')
@@ -30,7 +30,7 @@ def create_backup(db_file: Path, backup_folder: Path, logger: logging.Logger | N
 def cleanup_old_backups(backup_folder: Path, retention_days: int = 7, logger: logging.Logger | None = None):
     """Remove backups older than retention period"""
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.backup')
+        logger = logging.getLogger('data_pipeline.sync')
 
     if not backup_folder.exists():
         return

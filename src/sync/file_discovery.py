@@ -9,7 +9,7 @@ from .sync_state import load_state
 def get_excel_files(main_folder: Path, logger: logging.Logger | None = None) -> list[Path]:
     """Get all Excel files from main folder"""
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.file_discovery')
+        logger = logging.getLogger('data_pipeline.sync')
 
     files = list(main_folder.rglob('*.xlsx'))
     logger.debug(f'Found {len(files)} Excel file(s) in {main_folder}')
@@ -19,7 +19,7 @@ def get_excel_files(main_folder: Path, logger: logging.Logger | None = None) -> 
 def get_incremental_files(main_folder: Path, config: dict, logger: logging.Logger | None = None) -> list[Path]:
     """Get all incremental files matching the pattern"""
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.files')
+        logger = logging.getLogger('data_pipeline.sync')
 
     pattern = config.get('file_patterns', {}).get('daily_incremental', {}).get('pattern', 'incremental_*.xlsx')
     files = sorted(main_folder.glob(pattern))
@@ -30,7 +30,7 @@ def get_incremental_files(main_folder: Path, config: dict, logger: logging.Logge
 def get_weekly_full_files(main_folder: Path, config: dict, logger: logging.Logger | None = None) -> list[Path]:
     """Get all weekly full files matching the pattern"""
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.files')
+        logger = logging.getLogger('data_pipeline.sync')
 
     pattern = config.get('file_patterns', {}).get('weekly_full', {}).get('pattern', 'full_week*.xlsx')
     files = sorted(main_folder.glob(pattern))
@@ -62,7 +62,7 @@ def get_file_date(file_path: Path, config: dict, file_type: str) -> datetime:
 def check_for_changes(main_folder: Path, state_file: Path, logger: logging.Logger | None = None) -> tuple[bool, dict]:
     """Check if any Excel files have changed using file modification timestamps"""
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.files')
+        logger = logging.getLogger('data_pipeline.sync')
 
     excel_files = get_excel_files(main_folder)
     if not excel_files:
@@ -114,7 +114,7 @@ def cleanup_old_full_backups(reports_folder: Path, current_full_file: Path, conf
         logger: Logger instance
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.files')
+        logger = logging.getLogger('data_pipeline.sync')
 
     pattern = config.get('file_patterns', {}).get('weekly_full', {}).get('pattern', 'full_week*.xlsx')
     removed_count = 0
