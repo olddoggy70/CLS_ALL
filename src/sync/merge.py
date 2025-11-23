@@ -49,6 +49,10 @@ def filter_outdated_rows(
     current_dates = current_df.select(['_merge_key', Columns0031.ITEM_UPDATE_DATE]).rename(
         {Columns0031.ITEM_UPDATE_DATE: 'current_date'}
     )
+    
+    # Ensure uniqueness of keys in current_dates to prevent join explosion
+    # If duplicates exist in DB, take the latest date
+    current_dates = current_dates.group_by('_merge_key').agg(pl.col('current_date').max())
 
     # Join incremental with current dates
     # We use a left join to keep all incremental rows, then filter

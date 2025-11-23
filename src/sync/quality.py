@@ -337,51 +337,19 @@ def track_row_changes(
             ])
 
     # Add new rows to changes
-    # For new rows, we also want to record them in the audit log (optional, but good for completeness)
-    # The original code added them, so we will too
-    changes_df_new = None
+    # For new rows, we NO LONGER record them in the audit log (field-level)
+    # We just return the full dataframe for the "New Rows" sheet
+    # This is much faster and provides a better report format
+    
+    # Prepare new_rows_df (drop internal columns)
+    new_rows_df = None
     if len(new_rows) > 0:
-        # Identify columns
-        new_cols = list(set(new_rows.columns) - {'_unique_key', date_col})
+        new_rows_df = new_rows.drop(['_unique_key', 'source_file', '_merge_key'], strict=False)
 
-        # Melt
-        new_long = new_rows.select(['_unique_key', date_col, *new_cols]).melt(
-            id_vars=['_unique_key', date_col],
-            value_vars=new_cols,
-            variable_name='Column',
-            value_name='Current Value'
-        )
-
-        # Filter out nulls (optional, but usually we only care about populated fields)
-        new_long = new_long.filter(pl.col('Current Value').is_not_null())
-
-        if len(new_long) > 0:
-             changes_df_new = new_long.with_columns(
-                pl.col('_unique_key').str.split('|').alias('key_parts')
-            ).with_columns(
-                [
-                    pl.col('key_parts').list.get(0).alias(Columns0031.PMM_ITEM_NUMBER),
-                    pl.col('key_parts').list.get(1).alias(Columns0031.CORP_ACCT),
-                    pl.col('key_parts').list.get(2).alias(Columns0031.VENDOR_CODE),
-                    pl.col('key_parts').list.get(3).alias(Columns0031.ADD_COST_CENTRE),
-                    pl.col('key_parts').list.get(4).alias(Columns0031.ADD_GL_ACCOUNT),
-                    pl.lit(None).cast(pl.Utf8).alias('Previous Value'),
-                    pl.lit('New').alias('Change Type')
-                ]
-            ).drop(['key_parts', '_unique_key'])
-
-             changes_df_new = changes_df_new.with_columns([
-                pl.col('Current Value').cast(pl.Utf8),
-                pl.col(Columns0031.ITEM_UPDATE_DATE).cast(pl.Utf8)
-            ])
-
-    # Combine updates and new
+    # Combine updates (only updates now)
     audit_df = pl.DataFrame()
     if 'changes_df_updates' in locals() and len(changes_df_updates) > 0:
         audit_df = pl.concat([audit_df, changes_df_updates], how='diagonal')
-
-    if changes_df_new is not None and len(changes_df_new) > 0:
-        audit_df = pl.concat([audit_df, changes_df_new], how='diagonal')
 
     if len(audit_df) == 0:
         logger.debug('  No changes detected')
@@ -389,14 +357,10 @@ def track_row_changes(
             'has_changes': False,
             'changes_summary': None,
             'changes_df': None,
-            'new_rows_df': None,
+            'new_rows_df': new_rows_df,
             'updated_rows_df': None,
             'date_breakdown': date_breakdown,
         }
-
-    # Create audit dataframe
-    # schema = { ... } # Schema is now inferred or set during creation
-    # audit_df = pl.DataFrame(changes_list, schema=schema) # Already created above
 
     # Create summary
     change_summary = {
@@ -408,7 +372,7 @@ def track_row_changes(
     }
 
     # Separate new and updated changes
-    new_changes_df = audit_df.filter(pl.col('Change Type') == 'New')
+    # new_changes_df is now None because we don't track them in audit_df
     updated_changes_df = audit_df.filter(pl.col('Change Type') == 'Updated')
 
     logger.debug(f'  Total field-level changes tracked: {len(audit_df):,}')
@@ -417,7 +381,7 @@ def track_row_changes(
         'has_changes': True,
         'changes_summary': change_summary,
         'changes_df': audit_df,
-        'new_rows_df': new_changes_df,
+        'new_rows_df': new_rows_df,
         'updated_rows_df': updated_changes_df,
         'date_breakdown': date_breakdown,
     }

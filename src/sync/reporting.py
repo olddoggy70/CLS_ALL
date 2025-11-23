@@ -293,31 +293,11 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
                     combined_breakdown = combined_breakdown.rename({'row_count': 'Row Count'})
                     _write_dataframe_to_worksheet(workbook, combined_breakdown, 'Accepted Rows by Date', logger)
 
-        # === Sheet 4: New Rows (UPDATED - Full records instead of field-level) ===
+        # === Sheet 4: New Rows (UPDATED - Full records) ===
         new_rows_df = change_results.get('new_rows_df')
         if new_rows_df is not None and len(new_rows_df) > 0:
-            # Transform from field-level to record-level format
-            # Original format: Each row is one field of a record
-            # Target format: Each row is one complete record with all fields as columns
-            
-            key_cols = [Columns0031.PMM_ITEM_NUMBER, Columns0031.CORP_ACCT, Columns0031.VENDOR_CODE, Columns0031.ADD_COST_CENTRE, Columns0031.ADD_GL_ACCOUNT]
-
-            # Filter out rows where 'Column' matches any of the index columns (they're already in the index)
-            # This includes the 5 key columns + Item Update Date
-            index_cols = [*key_cols, Columns0031.ITEM_UPDATE_DATE]
-            new_rows_filtered = new_rows_df.filter(~pl.col('Column').is_in(index_cols))
-
-            # Only create the sheet if we have data after filtering
-            if len(new_rows_filtered) > 0:
-                # Pivot to get all columns as actual columns
-                new_records = new_rows_filtered.pivot(
-                    index=index_cols,
-                    columns='Column',
-                    values='Current Value',
-                    aggregate_function='first',  # Take first value if duplicates exist
-                )
-
-                _write_dataframe_to_worksheet(workbook, new_records, 'New Rows', logger)
+            # Now we just write the dataframe directly as it's already in the correct format
+            _write_dataframe_to_worksheet(workbook, new_rows_df, 'New Rows', logger)
 
         # === Sheet 5: Updated Rows (KEEP AS-IS - Field-level changes) ===
         updated_rows_df = change_results.get('updated_rows_df')
