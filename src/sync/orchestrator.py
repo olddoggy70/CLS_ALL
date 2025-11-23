@@ -1,28 +1,20 @@
 import logging
-import shutil  # Backup restoration
 import time  # Timing
 from datetime import datetime
 from pathlib import Path
 
-import polars as pl  # Read parquet files
-
-from src.sync.backup import cleanup_old_backups, create_backup
-from src.utils.file_operations import cleanup_old_archives
-from src.sync.file_discovery import (
-    check_for_changes,
-    get_excel_files,
-    get_incremental_files,
-    get_weekly_full_files,
-)
+from src.sync.backup import cleanup_old_backups
 from src.sync.core import (
     apply_incremental_update,
-    process_weekly_full_backup,
-    rebuild_parquet,
+    process_full_backup,
 )
-from src.sync.transformation import apply_categorical_types
-from src.sync.quality import track_row_changes, print_change_summary
+from src.sync.file_discovery import (
+    get_full_files,
+    get_incremental_files,
+)
 from src.sync.reporting import save_combined_report
 from src.sync.sync_state import load_state, save_state
+from src.utils.file_operations import cleanup_old_archives
 
 
 def _clean_change_summary_for_state(change_summary: dict | None) -> dict | None:
@@ -51,8 +43,6 @@ def _clean_change_summary_for_state(change_summary: dict | None) -> dict | None:
 def update_parquet_if_needed(
     config: dict,
     paths: dict,
-    force_rebuild: bool = False,
-    incremental_file: Path | None = None,
     logger: logging.Logger | None = None,
 ) -> bool:
     """
@@ -64,8 +54,6 @@ def update_parquet_if_needed(
     Args:
         config: Configuration dictionary
         paths: Paths dictionary from get_config_paths()
-        force_rebuild: If True, rebuild regardless of changes
-        incremental_file: If provided, apply incremental update from this Excel file (legacy mode)
         logger: Logger instance for output
 
     Returns:
@@ -93,102 +81,25 @@ def update_parquet_if_needed(
     # Load current state
     state = load_state(state_file)
 
-    # === LEGACY MODE: Single incremental file provided ===
-    if incremental_file:
-        if not incremental_file.exists():
-            logger.error(f'Incremental file not found: {incremental_file}')
-            return False
+    # === NEW MODE: Auto-detect full backup + daily incrementals ===
+    logger.info('=== Auto-Detection Mode: Full Backup + Daily Incrementals ===')
 
-        logger.info('=== Legacy Incremental Update Mode ===')
+    # Check for new full backup files (e.g. 8 plant files)
+    full_backup_files = get_full_files(main_folder, config)
+
+    # Detect if there are new full backup files
+    # Logic: Any full backup file in the folder is considered "new" and triggers a rebuild
+    # because processed files are archived.
+
+    if full_backup_files:
+        logger.info(f'✓ Found {len(full_backup_files)} full backup file(s)')
+        logger.info('=== Processing New Full Backup ===')
         total_start_time = time.time()
 
         try:
-            updated_df, validation_results, change_results = apply_incremental_update(
-                db_file,
-                incremental_file,
-                config,
-                backup_folder,
-                audit_folder,
-                blank_vpn_permitted_file=paths.get('blank_vpn_permitted_file'),
-                logger=logger,
-            )
-
-            # Calculate processing time
+            final_df, validation_results = process_full_backup(full_backup_files, config, paths)
             total_processing_time = time.time() - total_start_time
 
-            # Save combined report
-            report_files = save_combined_report(validation_results, change_results, total_processing_time, audit_folder)
-
-            # Clean change_summary before saving (remove non-serializable DataFrames)
-            change_summary_for_state = _clean_change_summary_for_state(change_results.get('changes_summary'))
-
-            # Update state
-            state.update(
-                {
-                    'last_update': datetime.now().isoformat(),
-                    'last_incremental_file': str(incremental_file),
-                    'row_count': len(updated_df),
-                    'column_count': len(updated_df.columns),
-                    'last_change_summary': change_summary_for_state,
-                    'last_validation_summary': {
-                        'has_issues': validation_results.get('has_issues'),
-                        'contracts_with_multiple_vendors': len(validation_results.get('contracts_with_multiple_vendors', [])),
-                        'blank_vendor_catalogue_count': validation_results.get('blank_vendor_catalogue_count', 0),
-                        'inconsistent_vendor_catalogue_count': validation_results.get('inconsistent_vendor_catalogue_count', 0),
-                    },
-                }
-            )
-            save_state(state_file, state)
-
-            # Cleanup old backups
-            retention_days = config.get('update_settings', {}).get('backup_retention_days', 7)
-            cleanup_old_backups(backup_folder, retention_days)
-
-            logger.info('=== Incremental Update Completed Successfully ===')
-            logger.info(f'Rows: {len(updated_df):,}')
-            logger.info(f'Columns: {len(updated_df.columns)}')
-            logger.info('')
-            logger.info('Reports saved:')
-            if report_files.get('markdown_file'):
-                logger.info(f'  - Markdown: {Path(report_files["markdown_file"]).name}')
-            if report_files.get('excel_file'):
-                logger.info(f'  - Excel: {Path(report_files["excel_file"]).name}')
-
-            return True
-
-        except Exception as e:
-            logger.error(f'Error during incremental update: {e}')
-            import traceback
-            logger.debug(traceback.format_exc())
-            raise
-
-    # === NEW MODE: Auto-detect weekly full + daily incrementals ===
-    logger.info('=== Auto-Detection Mode: Weekly Full + Daily Incrementals ===')
-
-    # Check for new weekly full backup file
-    weekly_full_files = get_weekly_full_files(main_folder, config)
-    last_full_backup_file = state.get('last_full_backup_file')
-
-    # Detect if there's a new weekly full file
-    new_weekly_full = None
-    if weekly_full_files:
-        latest_weekly_full = weekly_full_files[-1]  # Assuming sorted, take the latest
-        if str(latest_weekly_full) != last_full_backup_file:
-            new_weekly_full = latest_weekly_full
-            logger.info(f'✓ New weekly full backup detected: {new_weekly_full.name}')
-
-    # If new weekly full found, process it and reset incremental tracking
-    if new_weekly_full:
-        logger.info('=== Processing New Weekly Full Backup ===')
-        total_start_time = time.time()
-
-        try:
-            final_df, validation_results = process_weekly_full_backup(new_weekly_full, config, paths)
-
-            # Calculate processing time
-            total_processing_time = time.time() - total_start_time
-
-            # Create empty change results for weekly full
             change_results = {
                 'has_changes': False,
                 'changes_summary': None,
@@ -197,16 +108,15 @@ def update_parquet_if_needed(
                 'updated_rows_df': None,
             }
 
-            # Save combined report
             report_files = save_combined_report(validation_results, change_results, total_processing_time, audit_folder)
 
-            # Update state - reset incremental tracking
+            # Update state
             state.update(
                 {
                     'last_update': datetime.now().isoformat(),
                     'last_full_backup': datetime.now().isoformat(),
-                    'last_full_backup_file': str(new_weekly_full),
-                    'applied_incrementals': [],  # Reset incremental tracking
+                    'last_full_backup_files': [str(f) for f in full_backup_files],
+                    'applied_incrementals': [],
                     'row_count': len(final_df),
                     'column_count': len(final_df.columns),
                     'last_validation_summary': {
@@ -219,11 +129,19 @@ def update_parquet_if_needed(
             )
             save_state(state_file, state)
 
-            # Cleanup old backups
             retention_days = config.get('update_settings', {}).get('backup_retention_days', 7)
             cleanup_old_backups(backup_folder, retention_days)
 
-            logger.info('=== Weekly Full Backup Completed Successfully ===')
+            # Archive processed files
+            if archive_folder:
+                should_archive = config.get('file_patterns', {}).get('0031_full', {}).get('archive_after_processing', True)
+                if should_archive:
+                    logger.info('Archiving processed full backup files...')
+                    for file_path in full_backup_files:
+                        from src.utils.file_operations import archive_file
+                        archive_file(file_path, archive_folder)
+
+            logger.info('=== Full Backup Completed Successfully ===')
             logger.info(f'Rows: {len(final_df):,}')
             logger.info(f'Columns: {len(final_df.columns)}')
             logger.info('')
@@ -236,29 +154,28 @@ def update_parquet_if_needed(
             return True
 
         except Exception as e:
-            logger.error(f'Error during weekly full backup processing: {e}')
+            logger.error(f'Error during full backup processing: {e}')
             import traceback
             logger.debug(traceback.format_exc())
             raise
 
-    # Check for unapplied daily incremental files
+    # Check for incremental files
     all_incremental_files = get_incremental_files(main_folder, config)
-    applied_incrementals = set(state.get('applied_incrementals', []))
 
-    # Filter to only unapplied incremental files (use filename only for consistency)
-    unapplied_incrementals = [f for f in all_incremental_files if f.name not in applied_incrementals]
+    # Logic: Any incremental file in the folder is considered "new" and triggers update
+    # because processed files are archived.
 
-    if unapplied_incrementals:
-        logger.info(f'✓ Found {len(unapplied_incrementals)} unapplied incremental file(s)')
+    if all_incremental_files:
+        logger.info(f'✓ Found {len(all_incremental_files)} incremental file(s)')
 
         # Sort by filename (assumes date in filename for chronological order)
-        unapplied_incrementals.sort()
+        all_incremental_files.sort()
 
         # Check max incrementals per run
         max_incrementals = config.get('processing_schedule', {}).get('max_incrementals_per_run', 10)
-        if len(unapplied_incrementals) > max_incrementals:
-            logger.warning(f'Warning: {len(unapplied_incrementals)} files found, limiting to {max_incrementals} per run')
-            unapplied_incrementals = unapplied_incrementals[:max_incrementals]
+        if len(all_incremental_files) > max_incrementals:
+            logger.warning(f'Warning: {len(all_incremental_files)} files found, limiting to {max_incrementals} per run')
+            all_incremental_files = all_incremental_files[:max_incrementals]
 
         total_start_time = time.time()
 
@@ -266,7 +183,7 @@ def update_parquet_if_needed(
             # Process multiple incrementals in ONE efficient batch operation
             final_df, validation_results, change_results = apply_incremental_update(
                 db_file,
-                unapplied_incrementals,
+                all_incremental_files,
                 config,
                 backup_folder,
                 audit_folder,
@@ -284,7 +201,7 @@ def update_parquet_if_needed(
             change_summary_for_state = _clean_change_summary_for_state(change_results.get('changes_summary'))
 
             # Update state - add processed files to applied list (use filename only)
-            new_applied = applied_incrementals | {f.name for f in unapplied_incrementals}
+            new_applied = set(state.get('applied_incrementals', [])) | {f.name for f in all_incremental_files}
             state.update(
                 {
                     'last_update': datetime.now().isoformat(),
@@ -310,7 +227,7 @@ def update_parquet_if_needed(
             cleanup_old_archives(archive_folder, archive_retention)
 
             logger.info('=== Incremental Updates Completed Successfully ===')
-            logger.info(f'Processed {len(unapplied_incrementals)} incremental file(s) in batch')
+            logger.info(f'Processed {len(all_incremental_files)} incremental file(s) in batch')
             logger.info(f'Final rows: {len(final_df):,}')
             logger.info(f'Columns: {len(final_df.columns)}')
             logger.info('')
@@ -328,112 +245,7 @@ def update_parquet_if_needed(
             logger.debug(traceback.format_exc())
             raise
 
-    # No weekly full or incrementals found - fall back to original logic
+    # No weekly full or incrementals found
     logger.info('No new weekly full or incremental files detected')
-    logger.debug('Checking for general file changes...')
-
-    if not force_rebuild:
-        has_changes, current_timestamps = check_for_changes(main_folder, state_file)
-        if not has_changes:
-            logger.info('Parquet file is up to date - no rebuild needed')
-            return False
-    else:
-        logger.info('Force rebuild requested')
-        current_timestamps = {}
-        for file_path in get_excel_files(main_folder):
-            current_timestamps[str(file_path)] = file_path.stat().st_mtime
-
-    logger.info('=== Starting Parquet Rebuild ===')
-
-    # Load previous dataframe for change tracking
-    previous_df = None
-    if db_file.exists():
-        try:
-            logger.debug('Loading previous parquet for comparison...')
-            previous_df = pl.read_parquet(db_file)
-            # Apply categorical types for in-memory operations
-            previous_df = apply_categorical_types(previous_df, config)
-        except Exception as e:
-            logger.warning(f'Could not load previous parquet for comparison: {e}')
-
-    # Create backup of existing parquet file
-    backup_path = create_backup(db_file, backup_folder)
-
-    try:
-        # Start total processing timer
-        total_start_time = time.time()
-
-        # Rebuild parquet file (returns validation results too)
-        final_df, validation_results = rebuild_parquet(
-            main_folder, db_file, config, blank_vpn_permitted_file=paths.get('blank_vpn_permitted_file')
-        )
-
-        # Track changes if previous data exists
-        change_results = {
-            'has_changes': False,
-            'changes_summary': None,
-            'changes_df': None,
-            'new_rows_df': None,
-            'updated_rows_df': None,
-        }
-
-        if previous_df is not None:
-            change_results = track_row_changes(final_df, previous_df, audit_folder)
-            print_change_summary(change_results)
-
-        # Calculate total processing time
-        total_processing_time = time.time() - total_start_time
-
-        # Save combined report (validation + changes)
-        report_files = save_combined_report(validation_results, change_results, total_processing_time, audit_folder)
-
-        # Clean change_summary before saving (remove non-serializable DataFrames)
-        change_summary_for_state = _clean_change_summary_for_state(change_results.get('changes_summary'))
-
-        # Update state
-        state = {
-            'last_update': datetime.now().isoformat(),
-            'file_timestamps': current_timestamps,
-            'last_backup': str(backup_path) if backup_path else None,
-            'row_count': len(final_df),
-            'column_count': len(final_df.columns),
-            'last_change_summary': change_summary_for_state,
-            'last_validation_summary': {
-                'has_issues': validation_results.get('has_issues'),
-                'contracts_with_multiple_vendors': len(validation_results.get('contracts_with_multiple_vendors', [])),
-                'blank_vendor_catalogue_count': validation_results.get('blank_vendor_catalogue_count', 0),
-                'inconsistent_vendor_catalogue_count': validation_results.get('inconsistent_vendor_catalogue_count', 0),
-            },
-        }
-        save_state(state_file, state)
-
-        # Cleanup old backups
-        retention_days = config.get('update_settings', {}).get('backup_retention_days', 7)
-        cleanup_old_backups(backup_folder, retention_days)
-
-        logger.info('=== Parquet Update Completed Successfully ===')
-        logger.info(f'Rows: {len(final_df):,}')
-        logger.info(f'Columns: {len(final_df.columns)}')
-        if backup_path:
-            logger.info(f'Backup: {backup_path.name}')
-        logger.info('')
-        logger.info('Reports saved:')
-        if report_files.get('markdown_file'):
-            logger.info(f'  - Markdown: {Path(report_files["markdown_file"]).name}')
-        if report_files.get('excel_file'):
-            logger.info(f'  - Excel: {Path(report_files["excel_file"]).name}')
-
-        return True
-
-    except Exception as e:
-        logger.error(f'Error during update: {e}')
-        import traceback
-        logger.debug(traceback.format_exc())
-
-        # Restore from backup if it exists
-        if backup_path and backup_path.exists():
-            logger.info('Attempting to restore from backup...')
-            shutil.copy2(backup_path, db_file)
-            logger.info('Backup restored successfully')
-
-        raise
+    logger.info('Parquet file is up to date')
+    return False

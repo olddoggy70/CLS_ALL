@@ -4,7 +4,6 @@ Refactored to use specialized modules: ingest, transformation, merge
 """
 
 import logging
-import shutil
 import time
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from ..utils.file_operations import archive_file
 # Import from other sync modules
 from . import ingest, merge, transformation
 from .backup import create_backup
-from .file_discovery import cleanup_old_full_backups, get_excel_files
 from .quality import track_row_changes, validate_parquet_data
 
 
@@ -51,18 +49,12 @@ def apply_incremental_update(
     if logger is None:
         logger = logging.getLogger('data_pipeline.sync')
 
-    # Normalize input: single file → list with 1 file
+    # Normalize input: always list
     if isinstance(incremental_files, Path):
         incremental_files = [incremental_files]
-        is_batch_mode = False
-    else:
-        is_batch_mode = True
 
-    logger.info(f'=== Applying Incremental Update{"s" if is_batch_mode else ""} ===')
-    if is_batch_mode:
-        logger.info(f'Processing {len(incremental_files)} file(s) in batch')
-    else:
-        logger.info(f'Incremental file: {incremental_files[0].name}')
+    logger.info('=== Applying Incremental Updates ===')
+    logger.info(f'Processing {len(incremental_files)} file(s)')
 
     # Load existing parquet file
     if not db_file.exists():
@@ -93,21 +85,18 @@ def apply_incremental_update(
 
     for idx, file_path in enumerate(incremental_files, 1):
         try:
-            if is_batch_mode:
-                logger.info(f'  [{idx}/{len(incremental_files)}] Loading {file_path.name}...')
-            else:
-                logger.info(f'Loading incremental updates: {file_path.name}')
+            logger.info(f'  [{idx}/{len(incremental_files)}] Loading {file_path.name}...')
 
             # Use ingest module for reading (even single file)
             # process_excel_files returns a concatenated DF, so we pass a list of 1
             df = ingest.process_excel_files([file_path], infer_schema_length, logger)
 
             if df is not None:
-                # Add source filename for accurate tracking after filtering
+                # Add source_file column for accurate tracking
                 df = df.with_columns(pl.lit(file_path.name).alias('source_file'))
-                
-                logger.debug(f'      Rows: {len(df):,}' if is_batch_mode else f'  Incremental rows: {len(df):,}')
-                file_metadata.append({'index': idx, 'filename': file_path.name, 'row_count': len(df)})
+
+                logger.debug(f'      Rows: {len(df):,}')
+                file_metadata.append({'index': idx, 'filename': file_path.name, 'row_count': len(df), 'dataframe': df})
                 all_incremental_dfs.append(df)
 
         except Exception as e:
@@ -146,150 +135,162 @@ def apply_incremental_update(
     if not all(col in combined_incremental_df.columns for col in unique_keys):
         raise ValueError(f'Incremental files missing required columns: {unique_keys}')
 
+    # Smart Sync: Filter out outdated rows BEFORE tracking changes
+    # This ensures reporting only reflects rows that will actually be applied
+    
+    # We need merge keys for filtering
+    combined_incremental_df = merge.prepare_merge_keys(combined_incremental_df, logger)
+    
+    # Calculate rows before filtering
+    rows_before_filter = len(combined_incremental_df)
+    
+    # Apply filter
+    combined_incremental_df = merge.filter_outdated_rows(current_df, combined_incremental_df, logger)
+    
+    # Calculate skipped rows
+    skipped_rows = rows_before_filter - len(combined_incremental_df)
+    
     # Track changes - different approach for batch vs single file
-    if is_batch_mode:
-        # PER-FILE tracking for batch mode
-        logger.info('Tracking changes per file...')
-        all_change_results = []
+    # This logic is specific to reporting/audit, so we keep it here or move to reporting
+    # For now, keeping it here as it orchestrates the flow
+    # PER-FILE tracking
+    logger.info('Tracking changes per file...')
+    all_change_results = []
 
-        for file_info in file_metadata:
-            file_idx = file_info['index']
-            filename = file_info['filename']
+    # We no longer rely on slicing which is fragile if rows are filtered
+    # We use the source_file column we added earlier
 
-            # Filter by source_file to get the processed rows for this specific file
-            # This is robust even if rows were dropped during filtering
-            file_df = combined_incremental_df.filter(pl.col('source_file') == filename)
-            
-            # Temporarily drop source_file for change tracking comparison
-            file_df_clean = file_df.drop('source_file')
+    for file_info in file_metadata:
+        file_idx = file_info['index']
+        filename = file_info['filename']
 
-            logger.debug(f'  [{file_idx}/{len(file_metadata)}] Tracking changes from {filename}...')
-
-            file_change_results = track_row_changes(file_df_clean, current_df, audit_folder, logger)
-            file_change_results['source_file'] = filename
-            file_change_results['file_index'] = file_idx
-
-            all_change_results.append(file_change_results)
-
-        # Analyze duplicates for batch mode
-        logger.info('Analyzing duplicate items across files...')
-
-        # We need a temp key for duplicate analysis
-        # Drop source_file for key preparation to avoid schema issues if strict
-        combined_for_keys = combined_incremental_df.drop('source_file')
-        combined_with_keys = merge.prepare_merge_keys(combined_for_keys, logger)
+        # Filter by source_file to get exact rows for this file
+        file_df = combined_incremental_df.filter(pl.col('source_file') == filename)
         
-        # Rename _merge_key to _temp_key for the duplicate logic which expects _temp_key
-        combined_with_keys = combined_with_keys.rename({'_merge_key': '_temp_key'})
+        # Calculate per-file dropped rows
+        original_rows = file_info['row_count']
+        final_rows = len(file_df)
+        dropped_rows_file = original_rows - final_rows
 
-        duplicate_cols = [
-            pl.count().alias('occurrence_count'),
-            pl.col(Columns0031.PMM_ITEM_NUMBER).first().alias(Columns0031.PMM_ITEM_NUMBER),
-            pl.col(Columns0031.CORP_ACCT).first().alias(Columns0031.CORP_ACCT),
-            pl.col(Columns0031.VENDOR_CODE).first().alias(Columns0031.VENDOR_CODE),
-            pl.col(Columns0031.ADD_COST_CENTRE).first().alias(Columns0031.ADD_COST_CENTRE),
-            pl.col(Columns0031.ADD_GL_ACCOUNT).first().alias(Columns0031.ADD_GL_ACCOUNT),
-            pl.col(Columns0031.ITEM_UPDATE_DATE).alias('Update_Dates'),
-        ]
+        logger.debug(f'  [{file_idx}/{len(file_metadata)}] Tracking changes from {filename}...')
 
-        if 'Default UOM Price' in combined_incremental_df.columns:
-            duplicate_cols.append(pl.col('Default UOM Price').alias('Prices'))
+        file_change_results = track_row_changes(file_df, current_df, audit_folder, logger)
+        file_change_results['source_file'] = filename
+        file_change_results['file_index'] = file_idx
+        file_change_results['original_rows'] = original_rows
+        file_change_results['dropped_rows'] = dropped_rows_file
 
-        duplicate_analysis = (
-            combined_with_keys.group_by('_temp_key')
-            .agg(duplicate_cols)
-            .filter(pl.col('occurrence_count') > 1)
-            .sort('occurrence_count', descending=True)
+        all_change_results.append(file_change_results)
+
+    # Analyze duplicates
+    logger.info('Analyzing duplicate items across files...')
+
+    # We need a temp key for duplicate analysis
+    combined_with_keys = merge.prepare_merge_keys(combined_incremental_df, logger)
+    # Rename _merge_key to _temp_key for the duplicate logic which expects _temp_key
+    combined_with_keys = combined_with_keys.rename({'_merge_key': '_temp_key'})
+
+    duplicate_cols = [
+        pl.count().alias('occurrence_count'),
+        pl.col(Columns0031.PMM_ITEM_NUMBER).first().alias(Columns0031.PMM_ITEM_NUMBER),
+        pl.col(Columns0031.CORP_ACCT).first().alias(Columns0031.CORP_ACCT),
+        pl.col(Columns0031.VENDOR_CODE).first().alias(Columns0031.VENDOR_CODE),
+        pl.col(Columns0031.ADD_COST_CENTRE).first().alias(Columns0031.ADD_COST_CENTRE),
+        pl.col(Columns0031.ADD_GL_ACCOUNT).first().alias(Columns0031.ADD_GL_ACCOUNT),
+        pl.col(Columns0031.ITEM_UPDATE_DATE).alias('Update_Dates'),
+    ]
+
+    if 'Default UOM Price' in combined_incremental_df.columns:
+        duplicate_cols.append(pl.col('Default UOM Price').alias('Prices'))
+
+    duplicate_analysis = (
+        combined_with_keys.group_by('_temp_key')
+        .agg(duplicate_cols)
+        .filter(pl.col('occurrence_count') > 1)
+        .sort('occurrence_count', descending=True)
+    )
+
+    duplicate_count = len(duplicate_analysis)
+    duplicates_analysis_df = None
+    duplicates_full_df = None
+
+    if duplicate_count > 0:
+        logger.debug(f'  Found {duplicate_count:,} items updated across multiple files')
+
+        duplicate_keys = set(duplicate_analysis.select('_temp_key').to_series().to_list())
+        duplicates_full_df = (
+            combined_with_keys.filter(pl.col('_temp_key').is_in(list(duplicate_keys)))
+            .drop('_temp_key')
+            .sort(
+                [
+                    Columns0031.PMM_ITEM_NUMBER,
+                    Columns0031.CORP_ACCT,
+                    Columns0031.VENDOR_CODE,
+                    Columns0031.ADD_COST_CENTRE,
+                    Columns0031.ADD_GL_ACCOUNT,
+                    Columns0031.ITEM_UPDATE_DATE,
+                ]
+            )
         )
 
-        duplicate_count = len(duplicate_analysis)
-        duplicates_analysis_df = None
-        duplicates_full_df = None
-
-        if duplicate_count > 0:
-            logger.debug(f'  Found {duplicate_count:,} items updated across multiple files')
-
-            duplicate_keys = set(duplicate_analysis.select('_temp_key').to_series().to_list())
-            duplicates_full_df = (
-                combined_with_keys.filter(pl.col('_temp_key').is_in(list(duplicate_keys)))
-                .drop('_temp_key')
-                .sort(
-                    [
-                        Columns0031.PMM_ITEM_NUMBER,
-                        Columns0031.CORP_ACCT,
-                        Columns0031.VENDOR_CODE,
-                        Columns0031.ADD_COST_CENTRE,
-                        Columns0031.ADD_GL_ACCOUNT,
-                        Columns0031.ITEM_UPDATE_DATE,
-                    ]
-                )
-            )
-
-            duplicates_analysis_df = duplicate_analysis.drop('_temp_key')
-        else:
-            logger.debug('  No duplicate items found')
-
-        # Aggregate all change results
-        aggregated_summary = {
-            'total_changes': sum(c.get('changes_summary', {}).get('total_changes', 0) for c in all_change_results),
-            'new_rows': sum(c.get('changes_summary', {}).get('new_rows', 0) for c in all_change_results),
-            'updated_rows': sum(c.get('changes_summary', {}).get('updated_rows', 0) for c in all_change_results),
-            'files_processed': len(all_change_results),
-            'per_file_summary': [
-                {
-                    'file': c['source_file'],
-                    'file_index': c['file_index'],
-                    'total_changes': c.get('changes_summary', {}).get('total_changes', 0),
-                    'new_rows': c.get('changes_summary', {}).get('new_rows', 0),
-                    'updated_rows': c.get('changes_summary', {}).get('updated_rows', 0),
-                    'latest_update_date': c.get('changes_summary', {}).get('latest_update_date', 'N/A'),
-                    'date_breakdown': c.get('date_breakdown'),
-                }
-                for c in all_change_results
-            ],
-        }
-
-        # Combine DFs for reporting
-        all_changes_dfs = [c['changes_df'] for c in all_change_results if c.get('changes_df') is not None]
-        all_new_rows_dfs = [c['new_rows_df'] for c in all_change_results if c.get('new_rows_df') is not None]
-        all_updated_rows_dfs = [c['updated_rows_df'] for c in all_change_results if c.get('updated_rows_df') is not None]
-
-        change_results = {
-            'has_changes': True,
-            'changes_summary': aggregated_summary,
-            'changes_df': pl.concat(all_changes_dfs, how='diagonal') if all_changes_dfs else None,
-            'new_rows_df': pl.concat(all_new_rows_dfs, how='diagonal') if all_new_rows_dfs else None,
-            'updated_rows_df': pl.concat(all_updated_rows_dfs, how='diagonal') if all_updated_rows_dfs else None,
-            'duplicates_summary': {'duplicate_count': duplicate_count, 'total_rows_before_dedup': total_incremental_rows},
-            'duplicates_analysis_df': duplicates_analysis_df,
-            'duplicates_full_df': duplicates_full_df,
-        }
-        
-        # Remove source_file column before merging
-        combined_incremental_df = combined_incremental_df.drop('source_file')
-        
+        duplicates_analysis_df = duplicate_analysis.drop('_temp_key')
     else:
-        # SIMPLE tracking for single file mode
-        # Remove source_file column if it exists (it was added above)
-        if 'source_file' in combined_incremental_df.columns:
-            combined_incremental_df = combined_incremental_df.drop('source_file')
-            
-        logger.info('Tracking changes...')
-        change_results = track_row_changes(combined_incremental_df, current_df, audit_folder, logger)
+        logger.debug('  No duplicate items found')
+
+    # Aggregate all change results
+    aggregated_summary = {
+        'new_rows': sum((c.get('changes_summary') or {}).get('new_rows', 0) for c in all_change_results),
+        'updated_rows': sum((c.get('changes_summary') or {}).get('updated_rows', 0) for c in all_change_results),
+        'skipped_rows': skipped_rows,
+        'files_processed': len(all_change_results),
+        'per_file_summary': [
+            {
+                'file': c['source_file'],
+                'file_index': c['file_index'],
+                'original_rows': c['original_rows'],
+                'dropped_rows': c['dropped_rows'],
+                'new_rows': (c.get('changes_summary') or {}).get('new_rows', 0),
+                'updated_rows': (c.get('changes_summary') or {}).get('updated_rows', 0),
+                'latest_update_date': (c.get('changes_summary') or {}).get('latest_update_date', 'N/A'),
+                'date_breakdown': c.get('date_breakdown'),
+            }
+            for c in all_change_results
+        ],
+    }
+
+    # Combine DFs for reporting
+    all_changes_dfs = [c['changes_df'] for c in all_change_results if c.get('changes_df') is not None]
+    all_new_rows_dfs = [c['new_rows_df'] for c in all_change_results if c.get('new_rows_df') is not None]
+    all_updated_rows_dfs = [c['updated_rows_df'] for c in all_change_results if c.get('updated_rows_df') is not None]
+
+    change_results = {
+        'has_changes': True,
+        'changes_summary': aggregated_summary,
+        'changes_df': pl.concat(all_changes_dfs, how='diagonal') if all_changes_dfs else None,
+        'new_rows_df': pl.concat(all_new_rows_dfs, how='diagonal') if all_new_rows_dfs else None,
+        'updated_rows_df': pl.concat(all_updated_rows_dfs, how='diagonal') if all_updated_rows_dfs else None,
+        'duplicates_summary': {'duplicate_count': duplicate_count, 'total_rows_before_dedup': total_incremental_rows},
+        'duplicates_analysis_df': duplicates_analysis_df,
+        'duplicates_full_df': duplicates_full_df,
+    }
 
     # --- MERGE LOGIC START ---
     # Use the new merge module for the core logic
 
+    # Drop source_file column before merge if it exists
+    if 'source_file' in combined_incremental_df.columns:
+        combined_incremental_df = combined_incremental_df.drop('source_file')
+
     # 1. Deduplicate incremental data
-    combined_incremental_df, duplicates_removed = merge.deduplicate_data(combined_incremental_df, unique_keys, logger)
+    combined_incremental_df, _ = merge.deduplicate_data(combined_incremental_df, unique_keys, logger)
 
     # 2. Prepare merge keys
     logger.debug('Creating merge keys for database update...')
     current_df = merge.prepare_merge_keys(current_df, logger)
-    combined_incremental_df = merge.prepare_merge_keys(combined_incremental_df, logger)
+    # combined_incremental_df already has keys from Smart Sync step
 
     # 3. Identify changes
-    update_keys, new_keys = merge.identify_changes(current_df, combined_incremental_df, logger)
+    update_keys, _ = merge.identify_changes(current_df, combined_incremental_df, logger)
 
     # 4. Check for duplicate keys in DB (safety check)
     merge.check_duplicate_keys(current_df, update_keys, logger)
@@ -316,9 +317,9 @@ def apply_incremental_update(
     # Validate updated data
     validation_results = validate_parquet_data(updated_df, blank_vpn_permitted_file, logger)
 
-    # Archive files if batch mode with archive folder specified
-    if archive_folder and is_batch_mode:
-        should_archive = config.get('file_patterns', {}).get('daily_incremental', {}).get('archive_after_processing', True)
+    # Archive files if archive folder specified
+    if archive_folder:
+        should_archive = config.get('file_patterns', {}).get('0031_incremental', {}).get('archive_after_processing', True)
         if should_archive:
             logger.info('Archiving processed files...')
             for file_path in incremental_files:
@@ -329,74 +330,18 @@ def apply_incremental_update(
     return updated_df, validation_results, change_results
 
 
-def rebuild_parquet(
-    main_folder: Path,
-    db_file: Path,
+
+def process_full_backup(
+    full_backup_files: list[Path],
     config: dict,
-    skip_cleaning: bool = False,
-    blank_vpn_permitted_file: Path | None = None,
+    paths: dict,
     logger: logging.Logger | None = None,
 ) -> tuple[pl.DataFrame, dict]:
     """
-    Rebuild parquet file from scratch by processing all Excel files
+    Process a full backup (e.g. 8 plant files) and rebuild the database
 
     Args:
-        main_folder: Folder containing Excel files
-        db_file: Output parquet file path
-        config: Configuration dictionary
-        skip_cleaning: If True, skip cleaning and date conversion (just raw data)
-        blank_vpn_permitted_file: Path to permitted blank VPN file
-        logger: Logger instance
-
-    Returns:
-        Tuple of (DataFrame, validation_results)
-    """
-    if logger is None:
-        logger = logging.getLogger('data_pipeline.sync')
-
-    logger.info('=== Rebuilding Parquet File ===')
-    start_time = time.time()
-
-    excel_files = get_excel_files(main_folder)
-    if not excel_files:
-        raise ValueError('No Excel files found in main folder')
-
-    infer_schema_length = config.get('processing_options', {}).get('infer_schema_length', 0)
-
-    # Use ingest module
-    final_df = ingest.process_excel_files(excel_files, infer_schema_length, logger)
-
-    if final_df is None:
-        raise ValueError('Failed to process Excel files')
-
-    if not skip_cleaning:
-        # Use transformation module
-        final_df = transformation.clean_dataframe(final_df, logger)
-        data_config = config.get('data_processing', {})
-        final_df = transformation.convert_and_optimize_columns(final_df, config, logger)
-        final_df = transformation.apply_filters(final_df, data_config, logger)
-
-    logger.debug(f'Final DataFrame shape: {final_df.shape}')
-    logger.info(f'Writing to: {db_file}')
-    final_df.write_parquet(db_file)
-
-    # Validate data after writing
-    validation_results = validate_parquet_data(final_df, blank_vpn_permitted_file, logger)
-
-    process_time = time.time() - start_time
-    logger.info(f'Parquet rebuild completed in {process_time:.2f} seconds')
-
-    return final_df, validation_results
-
-
-def process_weekly_full_backup(
-    weekly_file: Path, config: dict, paths: dict, logger: logging.Logger | None = None
-) -> tuple[pl.DataFrame, dict]:
-    """
-    Process weekly full backup file and rebuild parquet from scratch
-
-    Args:
-        weekly_file: Path to weekly full backup file
+        full_backup_files: List of full backup Excel files
         config: Configuration dictionary
         paths: Paths dictionary
         logger: Logger instance
@@ -407,61 +352,37 @@ def process_weekly_full_backup(
     if logger is None:
         logger = logging.getLogger('data_pipeline.sync')
 
-    logger.info('=== Processing Weekly Full Backup ===')
-    logger.info(f'Weekly full file: {weekly_file.name}')
-
-    main_folder = paths['main_folder']
     db_file = paths['db_file_path']
     blank_vpn_permitted_file = paths.get('blank_vpn_permitted_file')
 
-    # Create backup of existing parquet before rebuild
-    backup_path = create_backup(db_file, paths['backup_folder'])
+    logger.info(f'=== Processing Full Backup ({len(full_backup_files)} files) ===')
+    start_time = time.time()
 
-    # Process the weekly full file as a single-file rebuild
-    logger.info('Processing weekly full backup file...')
-    try:
-        infer_schema_length = config.get('processing_options', {}).get('infer_schema_length', 0)
+    infer_schema_length = config.get('processing_options', {}).get('infer_schema_length', 0)
 
-        # Use ingest module (list of 1 file)
-        final_df = ingest.process_excel_files([weekly_file], infer_schema_length, logger)
+    # Use ingest module
+    final_df = ingest.process_excel_files(full_backup_files, infer_schema_length, logger)
 
-        if final_df is None:
-            raise ValueError('Failed to read weekly full backup file')
+    if final_df is None:
+        raise ValueError('Failed to process full backup files')
 
-        logger.debug(f'  Weekly full rows: {len(final_df):,}')
+    # Use transformation module
+    final_df = transformation.clean_dataframe(final_df, logger)
+    data_config = config.get('data_processing', {})
+    final_df = transformation.convert_and_optimize_columns(final_df, config, logger)
+    final_df = transformation.apply_filters(final_df, data_config, logger)
 
-        # Clean and process data using transformation module
-        final_df = transformation.clean_dataframe(final_df, logger)
-        data_config = config.get('data_processing', {})
-        final_df = transformation.convert_and_optimize_columns(final_df, config, logger)
-        final_df = transformation.apply_filters(final_df, data_config, logger)
+    logger.debug(f'Final DataFrame shape: {final_df.shape}')
+    logger.info(f'Writing to: {db_file}')
+    final_df.write_parquet(db_file)
 
-        # Write to parquet
-        logger.info(f'Writing to: {db_file}')
-        final_df.write_parquet(db_file)
+    # Validate data after writing
+    validation_results = validate_parquet_data(final_df, blank_vpn_permitted_file, logger)
 
-        # Validate data
-        validation_results = validate_parquet_data(final_df, blank_vpn_permitted_file, logger)
+    process_time = time.time() - start_time
+    logger.info(f'Full backup processing completed in {process_time:.2f} seconds')
 
-        # Cleanup old full backup files (keep only current)
-        keep_only_latest = config.get('file_patterns', {}).get('weekly_full', {}).get('keep_only_latest', True)
-        if keep_only_latest:
-            cleanup_old_full_backups(main_folder, weekly_file, config, logger)
+    return final_df, validation_results
 
-        logger.info('✓ Weekly full backup processed successfully')
-        logger.debug(f'  Final rows: {len(final_df):,}')
-        logger.debug(f'  Columns: {len(final_df.columns)}')
 
-        return final_df, validation_results
-
-    except Exception as e:
-        logger.error(f'Error processing weekly full backup: {e}')
-
-        # Restore from backup if it exists
-        if backup_path and backup_path.exists():
-            logger.info('Attempting to restore from backup...')
-            shutil.copy2(backup_path, db_file)
-            logger.info('Backup restored successfully')
-
-        raise
 

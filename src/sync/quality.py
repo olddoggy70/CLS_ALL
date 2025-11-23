@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 import polars as pl
+
 from ..constants import Columns0031
 
 
@@ -119,7 +120,7 @@ def validate_parquet_data(
             & pl.col('Vendor Seq').is_not_null()
             & (pl.col('Vendor Catalogue').cast(pl.Utf8).str.strip_chars() != '')
         ).with_columns(pl.col(Columns0031.CORP_ACCT).cast(pl.Utf8).str.slice(0, 2).alias('Corp_Acct_Prefix'))
-        
+
         catalogue_consistency = (
             consistency_df.group_by([Columns0031.PMM_ITEM_NUMBER, Columns0031.VENDOR_CODE, 'Corp_Acct_Prefix'])
             .agg(
@@ -278,76 +279,111 @@ def track_row_changes(
     new_rows = current_with_key.filter(pl.col('_unique_key').is_in(list(new_keys)))
     updated_rows_current = current_with_key.filter(pl.col('_unique_key').is_in(list(updated_keys)))
 
+    # logger.debug(f' new_keys: {new_keys}')
     logger.debug(f'  New rows: {len(new_rows):,}')
     logger.debug(f'  Updated rows: {len(updated_rows_current):,}')
 
     # Build change audit dataframe
+    # Build change audit dataframe
     changes_list = []
 
-    # For updated rows, compare with previous values
+    # For updated rows, compare with previous values using vectorized operations
     if len(updated_rows_current) > 0:
         updated_rows_previous = previous_with_key.filter(pl.col('_unique_key').is_in(list(updated_keys)))
 
-        # Join on unique key
-        joined = updated_rows_current.join(updated_rows_previous, on='_unique_key', suffix='_previous')
+        # Identify non-key columns to compare
+        compare_cols = list(set(current_with_key.columns) - {'_unique_key', date_col, 'source_file', '_merge_key'})
 
-        # Compare columns and identify changes
-        current_cols = set(current_with_key.columns) - {'_unique_key'}
+        # Select only necessary columns + key
+        curr_subset = updated_rows_current.select(['_unique_key', date_col, *compare_cols])
+        prev_subset = updated_rows_previous.select(['_unique_key', *compare_cols])
 
-        for row in joined.iter_rows(named=True):
-            row_date = row.get(date_col)  # Get the update date for this specific row
+        # Melt both to long format: _unique_key, variable (Column), value
+        curr_long = curr_subset.melt(id_vars=['_unique_key', date_col], value_vars=compare_cols, variable_name='Column', value_name='Current Value')
+        prev_long = prev_subset.melt(id_vars=['_unique_key'], value_vars=compare_cols, variable_name='Column', value_name='Previous Value')
 
-            for col in current_cols:
-                prev_col = f'{col}_previous'
-                if prev_col in row:
-                    current_val = row[col]
-                    previous_val = row[prev_col]
+        # Join on Key + Column
+        joined_long = curr_long.join(prev_long, on=['_unique_key', 'Column'], how='inner')
 
-                    if current_val != previous_val:
-                        changes_list.append(
-                            {
-                                Columns0031.PMM_ITEM_NUMBER: str(row[Columns0031.PMM_ITEM_NUMBER]) if row[Columns0031.PMM_ITEM_NUMBER] is not None else None,
-                                Columns0031.CORP_ACCT: str(row[Columns0031.CORP_ACCT]) if row[Columns0031.CORP_ACCT] is not None else None,
-                                Columns0031.VENDOR_CODE: str(row[Columns0031.VENDOR_CODE]) if row[Columns0031.VENDOR_CODE] is not None else None,
-                                Columns0031.ADD_COST_CENTRE: str(row[Columns0031.ADD_COST_CENTRE])
-                                if row[Columns0031.ADD_COST_CENTRE] is not None
-                                else None,
-                                Columns0031.ADD_GL_ACCOUNT: str(row[Columns0031.ADD_GL_ACCOUNT])
-                                if row[Columns0031.ADD_GL_ACCOUNT] is not None
-                                else None,
-                                'Column': col,
-                                'Previous Value': str(previous_val) if previous_val is not None else None,
-                                'Current Value': str(current_val) if current_val is not None else None,
-                                Columns0031.ITEM_UPDATE_DATE: str(row_date) if row_date is not None else None,  # Use row's actual date
-                                'Change Type': 'Updated',
-                            }
-                        )
+        # Filter for changes
+        # Handle nulls: if one is null and other isn't, or if values differ
+        # We cast to string and treat empty strings as nulls, but we DO NOT strip whitespace
+        # This ensures 'ABC' vs 'AB C' is treated as a change
+        changes_df_updates = joined_long.filter(
+            pl.col('Current Value').cast(pl.Utf8).fill_null('') != pl.col('Previous Value').cast(pl.Utf8).fill_null('')
+        )
+
+        if len(changes_df_updates) > 0:
+            # Parse the unique key back into component columns
+            # Key format: PMM|Corp|Vendor|Cost|GL
+            changes_df_updates = changes_df_updates.with_columns(
+                pl.col('_unique_key').str.split('|').alias('key_parts')
+            ).with_columns(
+                [
+                    pl.col('key_parts').list.get(0).alias(Columns0031.PMM_ITEM_NUMBER),
+                    pl.col('key_parts').list.get(1).alias(Columns0031.CORP_ACCT),
+                    pl.col('key_parts').list.get(2).alias(Columns0031.VENDOR_CODE),
+                    pl.col('key_parts').list.get(3).alias(Columns0031.ADD_COST_CENTRE),
+                    pl.col('key_parts').list.get(4).alias(Columns0031.ADD_GL_ACCOUNT),
+                    pl.lit('Updated').alias('Change Type')
+                ]
+            ).drop(['key_parts', '_unique_key'])
+
+            # Cast values to string for consistency
+            changes_df_updates = changes_df_updates.with_columns([
+                pl.col('Current Value').cast(pl.Utf8),
+                pl.col('Previous Value').cast(pl.Utf8),
+                pl.col(Columns0031.ITEM_UPDATE_DATE).cast(pl.Utf8)
+            ])
 
     # Add new rows to changes
-    for row in new_rows.iter_rows(named=True):
-        row_date = row.get(date_col)  # Get the update date for this specific row
+    # For new rows, we also want to record them in the audit log (optional, but good for completeness)
+    # The original code added them, so we will too
+    changes_df_new = None
+    if len(new_rows) > 0:
+        # Identify columns
+        new_cols = list(set(new_rows.columns) - {'_unique_key', date_col})
 
-        for col in set(new_rows.columns) - {'_unique_key'}:
-            changes_list.append(
-                {
-                    Columns0031.PMM_ITEM_NUMBER: str(row[Columns0031.PMM_ITEM_NUMBER]) if row[Columns0031.PMM_ITEM_NUMBER] is not None else None,
-                    Columns0031.CORP_ACCT: str(row[Columns0031.CORP_ACCT]) if row[Columns0031.CORP_ACCT] is not None else None,
-                    Columns0031.VENDOR_CODE: str(row[Columns0031.VENDOR_CODE]) if row[Columns0031.VENDOR_CODE] is not None else None,
-                    Columns0031.ADD_COST_CENTRE: str(row[Columns0031.ADD_COST_CENTRE])
-                    if row[Columns0031.ADD_COST_CENTRE] is not None
-                    else None,
-                    Columns0031.ADD_GL_ACCOUNT: str(row[Columns0031.ADD_GL_ACCOUNT])
-                    if row[Columns0031.ADD_GL_ACCOUNT] is not None
-                    else None,
-                    'Column': col,
-                    'Previous Value': None,
-                    'Current Value': str(row[col]) if row[col] is not None else None,
-                    Columns0031.ITEM_UPDATE_DATE: str(row_date) if row_date is not None else None,  # Use row's actual date
-                    'Change Type': 'New',
-                }
-            )
+        # Melt
+        new_long = new_rows.select(['_unique_key', date_col, *new_cols]).melt(
+            id_vars=['_unique_key', date_col],
+            value_vars=new_cols,
+            variable_name='Column',
+            value_name='Current Value'
+        )
 
-    if not changes_list:
+        # Filter out nulls (optional, but usually we only care about populated fields)
+        new_long = new_long.filter(pl.col('Current Value').is_not_null())
+
+        if len(new_long) > 0:
+             changes_df_new = new_long.with_columns(
+                pl.col('_unique_key').str.split('|').alias('key_parts')
+            ).with_columns(
+                [
+                    pl.col('key_parts').list.get(0).alias(Columns0031.PMM_ITEM_NUMBER),
+                    pl.col('key_parts').list.get(1).alias(Columns0031.CORP_ACCT),
+                    pl.col('key_parts').list.get(2).alias(Columns0031.VENDOR_CODE),
+                    pl.col('key_parts').list.get(3).alias(Columns0031.ADD_COST_CENTRE),
+                    pl.col('key_parts').list.get(4).alias(Columns0031.ADD_GL_ACCOUNT),
+                    pl.lit(None).cast(pl.Utf8).alias('Previous Value'),
+                    pl.lit('New').alias('Change Type')
+                ]
+            ).drop(['key_parts', '_unique_key'])
+
+             changes_df_new = changes_df_new.with_columns([
+                pl.col('Current Value').cast(pl.Utf8),
+                pl.col(Columns0031.ITEM_UPDATE_DATE).cast(pl.Utf8)
+            ])
+
+    # Combine updates and new
+    audit_df = pl.DataFrame()
+    if 'changes_df_updates' in locals() and len(changes_df_updates) > 0:
+        audit_df = pl.concat([audit_df, changes_df_updates], how='diagonal')
+
+    if changes_df_new is not None and len(changes_df_new) > 0:
+        audit_df = pl.concat([audit_df, changes_df_new], how='diagonal')
+
+    if len(audit_df) == 0:
         logger.debug('  No changes detected')
         return {
             'has_changes': False,
@@ -359,23 +395,12 @@ def track_row_changes(
         }
 
     # Create audit dataframe
-    schema = {
-        Columns0031.PMM_ITEM_NUMBER: pl.Utf8,
-        Columns0031.CORP_ACCT: pl.Utf8,
-        Columns0031.VENDOR_CODE: pl.Utf8,
-        Columns0031.ADD_COST_CENTRE: pl.Utf8,
-        Columns0031.ADD_GL_ACCOUNT: pl.Utf8,
-        'Column': pl.Utf8,
-        'Previous Value': pl.Utf8,
-        'Current Value': pl.Utf8,
-        Columns0031.ITEM_UPDATE_DATE: pl.Utf8,
-        'Change Type': pl.Utf8,
-    }
-    audit_df = pl.DataFrame(changes_list, schema=schema)
+    # schema = { ... } # Schema is now inferred or set during creation
+    # audit_df = pl.DataFrame(changes_list, schema=schema) # Already created above
 
     # Create summary
     change_summary = {
-        'total_changes': len(changes_list),
+        'total_changes': len(audit_df),
         'new_rows': len(new_rows),
         'updated_rows': len(updated_rows_current),
         'latest_update_date': str(latest_date),
@@ -386,7 +411,7 @@ def track_row_changes(
     new_changes_df = audit_df.filter(pl.col('Change Type') == 'New')
     updated_changes_df = audit_df.filter(pl.col('Change Type') == 'Updated')
 
-    logger.debug(f'  Total field-level changes tracked: {len(changes_list):,}')
+    logger.debug(f'  Total field-level changes tracked: {len(audit_df):,}')
 
     return {
         'has_changes': True,

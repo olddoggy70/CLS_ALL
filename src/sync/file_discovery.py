@@ -17,24 +17,38 @@ def get_excel_files(main_folder: Path, logger: logging.Logger | None = None) -> 
 
 
 def get_incremental_files(main_folder: Path, config: dict, logger: logging.Logger | None = None) -> list[Path]:
-    """Get all incremental files matching the pattern"""
+    """
+    Get all incremental files matching the pattern, EXCLUDING full files
+
+    The incremental pattern (e.g. *.xlsx) is often broad and matches files too.
+    We must explicitly exclude them to avoid double processing.
+    """
     if logger is None:
         logger = logging.getLogger('data_pipeline.sync')
 
-    pattern = config.get('file_patterns', {}).get('daily_incremental', {}).get('pattern', 'incremental_*.xlsx')
-    files = sorted(main_folder.glob(pattern))
-    logger.debug(f'Found {len(files)} incremental file(s) matching pattern: {pattern}')
-    return files
+    # Get incremental files
+    inc_pattern = config.get('file_patterns', {}).get('0031_incremental', {}).get('pattern', 'incremental_*.xlsx')
+    inc_files = set(main_folder.glob(inc_pattern))
+
+    # Get full files to exclude
+    full_pattern = config.get('file_patterns', {}).get('0031_full', {}).get('pattern', 'full_week*.xlsx')
+    full_files = set(main_folder.glob(full_pattern))
+
+    # Subtract full files from incremental files
+    final_files = sorted(list(inc_files - full_files))
+
+    logger.debug(f'Found {len(final_files)} incremental file(s) matching pattern: {inc_pattern} (excluded {len(full_files)} full backups)')
+    return final_files
 
 
-def get_weekly_full_files(main_folder: Path, config: dict, logger: logging.Logger | None = None) -> list[Path]:
-    """Get all weekly full files matching the pattern"""
+def get_full_files(main_folder: Path, config: dict, logger: logging.Logger | None = None) -> list[Path]:
+    """Get all full files matching the pattern"""
     if logger is None:
         logger = logging.getLogger('data_pipeline.sync')
 
-    pattern = config.get('file_patterns', {}).get('weekly_full', {}).get('pattern', 'full_week*.xlsx')
+    pattern = config.get('file_patterns', {}).get('0031_full', {}).get('pattern', 'full_week*.xlsx')
     files = sorted(main_folder.glob(pattern))
-    logger.debug(f'Found {len(files)} weekly full file(s) matching pattern: {pattern}')
+    logger.debug(f'Found {len(files)} full file(s) matching pattern: {pattern}')
     return files
 
 
@@ -45,13 +59,13 @@ def get_file_date(file_path: Path, config: dict, file_type: str) -> datetime:
     Args:
         file_path: Path to the file
         config: Configuration dictionary
-        file_type: Either 'daily_incremental' or 'weekly_full'
+        file_type: Either '0031_incremental' or '0031_full'
 
     Returns:
         datetime object or None if parsing fails
     """
     from ..utils.file_operations import parse_date_from_filename
-    
+
     date_format = config.get('file_patterns', {}).get(file_type, {}).get('date_format')
     if not date_format:
         return None
@@ -59,53 +73,11 @@ def get_file_date(file_path: Path, config: dict, file_type: str) -> datetime:
     return parse_date_from_filename(file_path.name, date_format)
 
 
-def check_for_changes(main_folder: Path, state_file: Path, logger: logging.Logger | None = None) -> tuple[bool, dict]:
-    """Check if any Excel files have changed using file modification timestamps"""
-    if logger is None:
-        logger = logging.getLogger('data_pipeline.sync')
-
-    excel_files = get_excel_files(main_folder)
-    if not excel_files:
-        logger.debug('No Excel files found')
-        return False, {}
-
-    state = load_state(state_file)
-    old_timestamps = state.get('file_timestamps', {})
-    current_timestamps = {}
-
-    has_changes = False
-    changed_files = []
-
-    for file_path in excel_files:
-        mtime = file_path.stat().st_mtime
-        current_timestamps[str(file_path)] = mtime
-
-        if str(file_path) not in old_timestamps:
-            logger.debug(f'New file detected: {file_path.name}')
-            has_changes = True
-            changed_files.append(file_path.name)
-        elif old_timestamps[str(file_path)] != mtime:
-            logger.debug(f'Change detected: {file_path.name}')
-            has_changes = True
-            changed_files.append(file_path.name)
-
-    # Check for deleted files
-    for old_file in old_timestamps:
-        if old_file not in current_timestamps:
-            logger.debug(f'File deleted: {Path(old_file).name}')
-            has_changes = True
-
-    if has_changes:
-        logger.debug(f'Total files with changes: {len(changed_files)}')
-    else:
-        logger.debug('No changes detected in Excel files')
-
-    return has_changes, current_timestamps
 
 
 def cleanup_old_full_backups(reports_folder: Path, current_full_file: Path, config: dict, logger: logging.Logger | None = None):
     """
-    Remove old weekly full backup files, keeping only the current one
+    Remove old full backup files, keeping only the current one
 
     Args:
         reports_folder: Folder containing full backup files
@@ -116,7 +88,7 @@ def cleanup_old_full_backups(reports_folder: Path, current_full_file: Path, conf
     if logger is None:
         logger = logging.getLogger('data_pipeline.sync')
 
-    pattern = config.get('file_patterns', {}).get('weekly_full', {}).get('pattern', 'full_week*.xlsx')
+    pattern = config.get('file_patterns', {}).get('0031_full', {}).get('pattern', 'full_week*.xlsx')
     removed_count = 0
 
     for old_full in reports_folder.glob(pattern):
@@ -128,4 +100,3 @@ def cleanup_old_full_backups(reports_folder: Path, current_full_file: Path, conf
     if removed_count > 0:
         logger.debug(f'Removed {removed_count} old full backup file(s)')
         logger.debug(f'✓ Keeping latest full backup: {current_full_file.name}')
-
