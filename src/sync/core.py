@@ -14,10 +14,10 @@ from ..constants import Columns0031
 
 # Import from utils
 from ..utils.file_operations import archive_file
-from .backup import create_backup
 
 # Import from other sync modules
 from . import ingest, merge, transformation
+from .backup import create_backup
 from .file_discovery import cleanup_old_full_backups, get_excel_files
 from .quality import track_row_changes, validate_parquet_data
 
@@ -85,7 +85,7 @@ def apply_incremental_update(
     # but use the new modules for the heavy lifting.
 
     infer_schema_length = config.get('processing_options', {}).get('infer_schema_length', 0)
-    
+
     # We need to load files individually to track metadata for reporting
     logger.info(f'Loading {len(incremental_files)} incremental file(s)...')
     all_incremental_dfs = []
@@ -101,10 +101,13 @@ def apply_incremental_update(
             # Use ingest module for reading (even single file)
             # process_excel_files returns a concatenated DF, so we pass a list of 1
             df = ingest.process_excel_files([file_path], infer_schema_length, logger)
-            
+
             if df is not None:
+                # Add source filename for accurate tracking after filtering
+                df = df.with_columns(pl.lit(file_path.name).alias('source_file'))
+                
                 logger.debug(f'      Rows: {len(df):,}' if is_batch_mode else f'  Incremental rows: {len(df):,}')
-                file_metadata.append({'index': idx, 'filename': file_path.name, 'row_count': len(df), 'dataframe': df})
+                file_metadata.append({'index': idx, 'filename': file_path.name, 'row_count': len(df)})
                 all_incremental_dfs.append(df)
 
         except Exception as e:
@@ -112,7 +115,7 @@ def apply_incremental_update(
             raise ValueError(f'Failed to load incremental file {file_path.name}: {e}')
 
     if not all_incremental_dfs:
-        raise ValueError("No data loaded from incremental files")
+        raise ValueError('No data loaded from incremental files')
 
     # Concatenate all incrementals into ONE combined DataFrame
     logger.info('Combining all incremental data...')
@@ -129,8 +132,6 @@ def apply_incremental_update(
     # Apply filters (incremental only)
     combined_incremental_df = transformation.apply_filters(combined_incremental_df, data_config, logger)
 
-
-
     # Validate required unique key columns
     unique_keys = [
         Columns0031.PMM_ITEM_NUMBER,
@@ -146,46 +147,25 @@ def apply_incremental_update(
         raise ValueError(f'Incremental files missing required columns: {unique_keys}')
 
     # Track changes - different approach for batch vs single file
-    # This logic is specific to reporting/audit, so we keep it here or move to reporting
-    # For now, keeping it here as it orchestrates the flow
     if is_batch_mode:
         # PER-FILE tracking for batch mode
         logger.info('Tracking changes per file...')
         all_change_results = []
-        current_position = 0
 
         for file_info in file_metadata:
             file_idx = file_info['index']
             filename = file_info['filename']
-            row_count = file_info['row_count']
 
-            # We need to slice the combined_incremental_df to get back the processed version of this file
-            # This assumes the order and row counts are preserved after cleaning/filtering
-            # Note: Filtering might change row counts! This is a potential issue in the original code too.
-            # However, apply_filters logs removal but doesn't track which file it came from easily.
-            # For now, we'll assume the slice is approximate or "good enough" for reporting context
-            # OR we could re-apply cleaning per file for tracking, but that's slow.
-            # Let's stick to the original logic's assumption or just use the original DF for tracking?
-            # The original code sliced combined_incremental_df.
+            # Filter by source_file to get the processed rows for this specific file
+            # This is robust even if rows were dropped during filtering
+            file_df = combined_incremental_df.filter(pl.col('source_file') == filename)
             
-            # SAFEGUARD: If rows were filtered, current_position might be off.
-            # But apply_filters is applied to the combined DF.
-            # If we want accurate per-file tracking, we should probably track changes BEFORE filtering?
-            # Or accept that reporting is on the "valid" rows.
-            
-            # Let's use the slice but be careful about bounds
-            end_position = min(current_position + row_count, len(combined_incremental_df))
-            file_df = combined_incremental_df.slice(current_position, row_count) # This might be wrong if rows were dropped
-            
-            # Actually, if rows are dropped, we can't easily map back to source file by index.
-            # A better way would be to add a source_file column during ingest, but that changes schema.
-            # For this refactor, I will keep the logic as close to original as possible.
-            
-            current_position += row_count
+            # Temporarily drop source_file for change tracking comparison
+            file_df_clean = file_df.drop('source_file')
 
             logger.debug(f'  [{file_idx}/{len(file_metadata)}] Tracking changes from {filename}...')
 
-            file_change_results = track_row_changes(file_df, current_df, audit_folder, logger)
+            file_change_results = track_row_changes(file_df_clean, current_df, audit_folder, logger)
             file_change_results['source_file'] = filename
             file_change_results['file_index'] = file_idx
 
@@ -193,9 +173,12 @@ def apply_incremental_update(
 
         # Analyze duplicates for batch mode
         logger.info('Analyzing duplicate items across files...')
-        
+
         # We need a temp key for duplicate analysis
-        combined_with_keys = merge.prepare_merge_keys(combined_incremental_df, logger)
+        # Drop source_file for key preparation to avoid schema issues if strict
+        combined_for_keys = combined_incremental_df.drop('source_file')
+        combined_with_keys = merge.prepare_merge_keys(combined_for_keys, logger)
+        
         # Rename _merge_key to _temp_key for the duplicate logic which expects _temp_key
         combined_with_keys = combined_with_keys.rename({'_merge_key': '_temp_key'})
 
@@ -281,14 +264,22 @@ def apply_incremental_update(
             'duplicates_analysis_df': duplicates_analysis_df,
             'duplicates_full_df': duplicates_full_df,
         }
+        
+        # Remove source_file column before merging
+        combined_incremental_df = combined_incremental_df.drop('source_file')
+        
     else:
         # SIMPLE tracking for single file mode
+        # Remove source_file column if it exists (it was added above)
+        if 'source_file' in combined_incremental_df.columns:
+            combined_incremental_df = combined_incremental_df.drop('source_file')
+            
         logger.info('Tracking changes...')
         change_results = track_row_changes(combined_incremental_df, current_df, audit_folder, logger)
 
     # --- MERGE LOGIC START ---
     # Use the new merge module for the core logic
-    
+
     # 1. Deduplicate incremental data
     combined_incremental_df, duplicates_removed = merge.deduplicate_data(combined_incremental_df, unique_keys, logger)
 
@@ -305,7 +296,7 @@ def apply_incremental_update(
 
     # 5. Apply merge
     updated_df = merge.merge_dataframes(current_df, combined_incremental_df, update_keys, logger)
-    
+
     # --- MERGE LOGIC END ---
 
     final_row_count = len(updated_df)
@@ -371,7 +362,7 @@ def rebuild_parquet(
         raise ValueError('No Excel files found in main folder')
 
     infer_schema_length = config.get('processing_options', {}).get('infer_schema_length', 0)
-    
+
     # Use ingest module
     final_df = ingest.process_excel_files(excel_files, infer_schema_length, logger)
 
@@ -430,12 +421,12 @@ def process_weekly_full_backup(
     logger.info('Processing weekly full backup file...')
     try:
         infer_schema_length = config.get('processing_options', {}).get('infer_schema_length', 0)
-        
+
         # Use ingest module (list of 1 file)
         final_df = ingest.process_excel_files([weekly_file], infer_schema_length, logger)
-        
+
         if final_df is None:
-             raise ValueError("Failed to read weekly full backup file")
+            raise ValueError('Failed to read weekly full backup file')
 
         logger.debug(f'  Weekly full rows: {len(final_df):,}')
 
