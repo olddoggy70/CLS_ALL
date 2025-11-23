@@ -49,17 +49,17 @@
     }
   },
   "file_patterns": {
-    "daily_incremental": {
-      "pattern": "0031-Contract Item Price Cat Pkg Extract *.xlsx",
+    "0031_incremental": {
+      "pattern": "0031-Contract Item Price Cat Pkg Extract [0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9]*.xlsx",
       "date_format": "0031-Contract Item Price Cat Pkg Extract %Y_%m_%d*.xlsx",
       "archive_after_processing": true,
-      "description": "Matches: 0031-Contract Item Price Cat Pkg Extract 2025_11_06.xlsx or 0031-Contract Item Price Cat Pkg Extract 2025_10_28-2025_11_02.xlsx"
+      "description": "INCREMENTAL: Matches files with YYYY_MM_DD format (e.g. ...2025_11_06.xlsx). Updates existing database."
     },
-    "weekly_full": {
+    "0031_full": {
       "pattern": "0031-Contract Item Price Cat Pkg Extract [0-9][0-9][0-9][0-9].xlsx",
       "date_format": "0031-Contract Item Price Cat Pkg Extract %m%d.xlsx",
       "keep_only_latest": true,
-      "description": "Matches: 0031-Contract Item Price Cat Pkg Extract 0201.xlsx (MMDD format)"
+      "description": "FULL BACKUP: Matches files with MMDD format (e.g. ...0201.xlsx). Triggers complete database rebuild."
     },
     "daily_files": {
       "pattern": "Allscripts_historical_deduped_*.xlsx",
