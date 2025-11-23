@@ -103,8 +103,11 @@ def apply_incremental_update(
             df = ingest.process_excel_files([file_path], infer_schema_length, logger)
 
             if df is not None:
+                # Add source filename for accurate tracking after filtering
+                df = df.with_columns(pl.lit(file_path.name).alias('source_file'))
+                
                 logger.debug(f'      Rows: {len(df):,}' if is_batch_mode else f'  Incremental rows: {len(df):,}')
-                file_metadata.append({'index': idx, 'filename': file_path.name, 'row_count': len(df), 'dataframe': df})
+                file_metadata.append({'index': idx, 'filename': file_path.name, 'row_count': len(df)})
                 all_incremental_dfs.append(df)
 
         except Exception as e:
@@ -144,46 +147,25 @@ def apply_incremental_update(
         raise ValueError(f'Incremental files missing required columns: {unique_keys}')
 
     # Track changes - different approach for batch vs single file
-    # This logic is specific to reporting/audit, so we keep it here or move to reporting
-    # For now, keeping it here as it orchestrates the flow
     if is_batch_mode:
         # PER-FILE tracking for batch mode
         logger.info('Tracking changes per file...')
         all_change_results = []
-        current_position = 0
 
         for file_info in file_metadata:
             file_idx = file_info['index']
             filename = file_info['filename']
-            row_count = file_info['row_count']
 
-            # We need to slice the combined_incremental_df to get back the processed version of this file
-            # This assumes the order and row counts are preserved after cleaning/filtering
-            # Note: Filtering might change row counts! This is a potential issue in the original code too.
-            # However, apply_filters logs removal but doesn't track which file it came from easily.
-            # For now, we'll assume the slice is approximate or "good enough" for reporting context
-            # OR we could re-apply cleaning per file for tracking, but that's slow.
-            # Let's stick to the original logic's assumption or just use the original DF for tracking?
-            # The original code sliced combined_incremental_df.
-
-            # SAFEGUARD: If rows were filtered, current_position might be off.
-            # But apply_filters is applied to the combined DF.
-            # If we want accurate per-file tracking, we should probably track changes BEFORE filtering?
-            # Or accept that reporting is on the "valid" rows.
-
-            # Let's use the slice but be careful about bounds
-            end_position = min(current_position + row_count, len(combined_incremental_df))
-            file_df = combined_incremental_df.slice(current_position, row_count)  # This might be wrong if rows were dropped
-
-            # Actually, if rows are dropped, we can't easily map back to source file by index.
-            # A better way would be to add a source_file column during ingest, but that changes schema.
-            # For this refactor, I will keep the logic as close to original as possible.
-
-            current_position += row_count
+            # Filter by source_file to get the processed rows for this specific file
+            # This is robust even if rows were dropped during filtering
+            file_df = combined_incremental_df.filter(pl.col('source_file') == filename)
+            
+            # Temporarily drop source_file for change tracking comparison
+            file_df_clean = file_df.drop('source_file')
 
             logger.debug(f'  [{file_idx}/{len(file_metadata)}] Tracking changes from {filename}...')
 
-            file_change_results = track_row_changes(file_df, current_df, audit_folder, logger)
+            file_change_results = track_row_changes(file_df_clean, current_df, audit_folder, logger)
             file_change_results['source_file'] = filename
             file_change_results['file_index'] = file_idx
 
@@ -193,7 +175,10 @@ def apply_incremental_update(
         logger.info('Analyzing duplicate items across files...')
 
         # We need a temp key for duplicate analysis
-        combined_with_keys = merge.prepare_merge_keys(combined_incremental_df, logger)
+        # Drop source_file for key preparation to avoid schema issues if strict
+        combined_for_keys = combined_incremental_df.drop('source_file')
+        combined_with_keys = merge.prepare_merge_keys(combined_for_keys, logger)
+        
         # Rename _merge_key to _temp_key for the duplicate logic which expects _temp_key
         combined_with_keys = combined_with_keys.rename({'_merge_key': '_temp_key'})
 
@@ -279,8 +264,16 @@ def apply_incremental_update(
             'duplicates_analysis_df': duplicates_analysis_df,
             'duplicates_full_df': duplicates_full_df,
         }
+        
+        # Remove source_file column before merging
+        combined_incremental_df = combined_incremental_df.drop('source_file')
+        
     else:
         # SIMPLE tracking for single file mode
+        # Remove source_file column if it exists (it was added above)
+        if 'source_file' in combined_incremental_df.columns:
+            combined_incremental_df = combined_incremental_df.drop('source_file')
+            
         logger.info('Tracking changes...')
         change_results = track_row_changes(combined_incremental_df, current_df, audit_folder, logger)
 
@@ -325,7 +318,7 @@ def apply_incremental_update(
 
     # Archive files if batch mode with archive folder specified
     if archive_folder and is_batch_mode:
-        should_archive = config.get('file_patterns', {}).get('0031_incremental', {}).get('archive_after_processing', True)
+        should_archive = config.get('file_patterns', {}).get('daily_incremental', {}).get('archive_after_processing', True)
         if should_archive:
             logger.info('Archiving processed files...')
             for file_path in incremental_files:
@@ -391,5 +384,84 @@ def rebuild_parquet(
     validation_results = validate_parquet_data(final_df, blank_vpn_permitted_file, logger)
 
     process_time = time.time() - start_time
+    logger.info(f'Parquet rebuild completed in {process_time:.2f} seconds')
+
+    return final_df, validation_results
+
+
+def process_weekly_full_backup(
+    weekly_file: Path, config: dict, paths: dict, logger: logging.Logger | None = None
+) -> tuple[pl.DataFrame, dict]:
+    """
+    Process weekly full backup file and rebuild parquet from scratch
+
+    Args:
+        weekly_file: Path to weekly full backup file
+        config: Configuration dictionary
+        paths: Paths dictionary
+        logger: Logger instance
+
+    Returns:
+        Tuple of (DataFrame, validation_results)
+    """
+    if logger is None:
+        logger = logging.getLogger('data_pipeline.sync')
+
+    logger.info('=== Processing Weekly Full Backup ===')
+    logger.info(f'Weekly full file: {weekly_file.name}')
+
+    main_folder = paths['main_folder']
+    db_file = paths['db_file_path']
+    blank_vpn_permitted_file = paths.get('blank_vpn_permitted_file')
+
+    # Create backup of existing parquet before rebuild
+    backup_path = create_backup(db_file, paths['backup_folder'])
+
+    # Process the weekly full file as a single-file rebuild
+    logger.info('Processing weekly full backup file...')
+    try:
+        infer_schema_length = config.get('processing_options', {}).get('infer_schema_length', 0)
+
+        # Use ingest module (list of 1 file)
+        final_df = ingest.process_excel_files([weekly_file], infer_schema_length, logger)
+
+        if final_df is None:
+            raise ValueError('Failed to read weekly full backup file')
+
+        logger.debug(f'  Weekly full rows: {len(final_df):,}')
+
+        # Clean and process data using transformation module
+        final_df = transformation.clean_dataframe(final_df, logger)
+        data_config = config.get('data_processing', {})
+        final_df = transformation.convert_and_optimize_columns(final_df, config, logger)
+        final_df = transformation.apply_filters(final_df, data_config, logger)
+
+        # Write to parquet
+        logger.info(f'Writing to: {db_file}')
+        final_df.write_parquet(db_file)
+
+        # Validate data
+        validation_results = validate_parquet_data(final_df, blank_vpn_permitted_file, logger)
+
+        # Cleanup old full backup files (keep only current)
+        keep_only_latest = config.get('file_patterns', {}).get('weekly_full', {}).get('keep_only_latest', True)
+        if keep_only_latest:
+            cleanup_old_full_backups(main_folder, weekly_file, config, logger)
+
+        logger.info('✓ Weekly full backup processed successfully')
+        logger.debug(f'  Final rows: {len(final_df):,}')
+        logger.debug(f'  Columns: {len(final_df.columns)}')
+
+        return final_df, validation_results
+
+    except Exception as e:
+        logger.error(f'Error processing weekly full backup: {e}')
+
+        # Restore from backup if it exists
+        if backup_path and backup_path.exists():
+            logger.info('Attempting to restore from backup...')
+            shutil.copy2(backup_path, db_file)
+            logger.info('Backup restored successfully')
 
         raise
+
