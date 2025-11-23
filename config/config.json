@@ -82,7 +82,8 @@
       "exclude_corp_acct": [
         "0202",
         "0205",
-        "0502"
+        "0502",
+        "0405"
       ],
       "exclude_vendor_prefix": []
     },
