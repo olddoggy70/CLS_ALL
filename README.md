@@ -36,6 +36,7 @@ The pipeline handles ~1.4M records with automatic change tracking, data validati
 ### Phase 0: Database Sync
 - ✅ **Automatic detection** of full backups and incrementals
 - ✅ **Batch processing** - processes multiple files efficiently in one operation
+- ✅ **Smart Sync** - strictly filters out outdated rows (Incoming > Existing)
 - ✅ **Change tracking** - per-file change analysis with field-level detail
 - ✅ **Duplicate detection** - identifies items updated across multiple files
 - ✅ **Data validation** - contract-vendor relationships, blank catalogues, consistency checks
@@ -402,19 +403,6 @@ mv data/reports/archive/*.xlsx data/reports/0031/
 python main.py sync
 ```
 
-**Reset state (force full rebuild):**
-```bash
-# Delete state file
-# Windows
-del data\database\parquet_state.json
-
-# Linux/Mac
-rm data/database/parquet_state.json
-
-# Run sync (will rebuild from all files)
-python main.py sync
-```
-
 ---
 
 ## Architecture
@@ -443,13 +431,18 @@ For detailed technical documentation, see:
 │   Phase 0    │  │   Phase 1    │  │   Phase 2    │  │   Phase 3    │
 │  Sync (DB)   │  │ Integration  │  │Classification│  │    Export    │
 ├──────────────┤  ├──────────────┤  ├──────────────┤  ├──────────────┤
-│ database_    │  │ integrate.py │  │classification│  │  export.py   │
-│  sync.py     │  │              │  │     .py      │  │              │
-│      │       │  │              │  │              │  │              │
-│      ▼       │  └──────────────┘  └──────────────┘  └──────────────┘
-│ sync_core/   │
-│ (internal)   │
-└──────────────┘
+│ sync/        │  │ integrate/   │  │  classify/   │  │   export/    │
+│ (package)    │  │ (package)    │  │  (package)   │  │  (package)   │
+│      │       │  │      │       │  │              │  │              │
+│      ▼       │  │      ▼       │  └──────────────┘  └──────────────┘
+│ pipeline.py  │  │ pipeline.py  │
+│      │       │  │      │       │
+│      ▼       │  │      ▼       │
+│ orchestrator │  │ ingest.py    │
+│ core.py      │  │ baseline.py  │
+│ merge.py     │  │ enrichment.py│
+│ quality.py   │  │              │
+└──────────────┘  └──────────────┘
 ```
 
 ### Directory Structure
@@ -461,19 +454,32 @@ cls_project/
 │   └── config.json             # Configuration
 ├── logs/                        # Daily log files
 ├── src/
+│   ├── __init__.py
 │   ├── logging_config.py       # Logging setup
-│   ├── database_sync.py        # Phase 0 public API
-│   ├── integrate.py            # Phase 1
-│   ├── classification.py       # Phase 2
-│   ├── export.py               # Phase 3
-│   └── sync_core/              # Phase 0 internal modules
-│       ├── orchestrator.py     # Main coordination
-│       ├── processing.py       # Data processing
-│       ├── quality.py          # Validation & changes
-│       ├── reporting.py        # Report generation
-│       ├── files.py            # File operations
-│       ├── backup.py           # Backup management
-│       └── state.py            # State tracking
+│   ├── constants.py            # Shared constants
+│   ├── sync/                   # Phase 0: Database Sync
+│   │   ├── pipeline.py         # Public API
+│   │   ├── orchestrator.py     # Main coordination
+│   │   ├── core.py             # Core sync logic
+│   │   ├── merge.py            # Smart Sync & Deduplication
+│   │   ├── quality.py          # Change Tracking & Validation
+│   │   ├── reporting.py        # Report generation
+│   │   ├── ingest.py           # File reading
+│   │   ├── transformation.py   # Data transformation
+│   │   ├── file_discovery.py   # File pattern matching
+│   │   ├── backup.py           # Backup management
+│   │   └── sync_state.py       # State tracking
+│   ├── integrate/              # Phase 1: Integration
+│   │   ├── pipeline.py         # Main logic
+│   │   ├── ingest.py           # Data ingestion
+│   │   ├── baseline.py         # Database prep
+│   │   └── enrichment.py       # Data enrichment
+│   ├── classify/               # Phase 2: Classification
+│   │   └── ...                 # (In development)
+│   ├── export/                 # Phase 3: Export
+│   │   └── ...                 # Export logic
+│   └── utils/                  # Shared utilities
+│       └── ...
 └── data/
     ├── database/               # 0031.parquet + backups
     ├── reports/0031/           # Input: incremental files
@@ -558,8 +564,6 @@ The pipeline maintains state in `data/database/parquet_state.json`:
 - Row/column counts
 - Last validation summary
 
-Delete this file to force a full rebuild from scratch.
-
 ---
 
 ## Contributing
@@ -572,7 +576,7 @@ Internal use only - CLS Allscripts Data Processing Pipeline
 
 ---
 
-**Last Updated:** 2025-11-19  
-**Version:** 1.0  
+**Last Updated:** 2025-11-23 20:49  
+**Version:** 2.2  
+**Python Version:** 3.12
 
-**Python Version:** 3.1
