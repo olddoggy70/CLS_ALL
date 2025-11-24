@@ -8,7 +8,7 @@ Here's what I added to your README.md:
 
 3. Smart Sync Explanation - Detailed example in Phase 0 showing how it prevents data overwrites
 
-4.Config Reference - Added note that integration output format is configurable in config.json
+4. Config Reference - Added note that integration output format is configurable in config.json
 
 5. Performance Context - Added typical workload details (row counts, file sizes, optimization techniques)
 
