@@ -34,7 +34,7 @@ The pipeline handles ~1.4M records with automatic change tracking, data validati
 ## Features
 
 ### Phase 0: Database Sync
-- ✅ **Automatic detection** of weekly full backups and daily incrementals
+- ✅ **Automatic detection** of full backups and incrementals
 - ✅ **Batch processing** - processes multiple files efficiently in one operation
 - ✅ **Change tracking** - per-file change analysis with field-level detail
 - ✅ **Duplicate detection** - identifies items updated across multiple files
@@ -95,7 +95,7 @@ The pipeline handles ~1.4M records with automatic change tracking, data validati
 
 1. **Place baseline database**
    ```bash
-   # Place your weekly full backup file in data/reports/0031/
+   # Place your full backup file in data/reports/0031/
    # Example: 0031-Contract Item Price Cat Pkg Extract 1108.xlsx
    ```
 
@@ -168,14 +168,14 @@ python main.py sync
 
 ### Phase 0: Database Sync
 
-**Purpose:** Maintain the 0031.parquet database by applying incremental updates or weekly full refreshes.
+**Purpose:** Maintain the 0031.parquet database by applying incremental updates or full refreshes.
 
 **Input Files:**
-- **Weekly Full:** `0031-Contract Item Price Cat Pkg Extract 1108.xlsx` (MMDD format)
-- **Daily Incremental:** `0031-Contract Item Price Cat Pkg Extract 2025_11_06.xlsx`
+- **Full:** `0031-Contract Item Price Cat Pkg Extract 1108.xlsx` (MMDD format)
+- **Incremental:** `0031-Contract Item Price Cat Pkg Extract 2025_11_06.xlsx`
 
 **Processing:**
-1. Auto-detects file type (weekly full vs incremental)
+1. Auto-detects file type (full vs incremental)
 2. Creates backup before modifications
 3. Applies changes with field-level tracking
 4. Validates data quality
@@ -241,11 +241,11 @@ python main.py sync
 **File Patterns:**
 ```json
 "file_patterns": {
-  "daily_incremental": {
+  "0031_incremental": {
     "pattern": "0031-Contract Item Price Cat Pkg Extract *.xlsx",
     "archive_after_processing": true
   },
-  "weekly_full": {
+  "0031_full": {
     "pattern": "0031-Contract Item Price Cat Pkg Extract [0-9][0-9][0-9][0-9].xlsx",
     "keep_only_latest": true
   }
@@ -303,10 +303,10 @@ python main.py integrate
 # Check: data/database/audit/validation_and_changes_report_<date>.xlsx
 ```
 
-### Weekly Full Refresh
+### Full Refresh
 
 ```bash
-# 1. Place weekly full file in data/reports/0031/
+# 1. Place full file in data/reports/0031/
 # Example: 0031-Contract Item Price Cat Pkg Extract 1108.xlsx
 
 # 2. Run sync (auto-detects and processes full backup)
@@ -370,7 +370,7 @@ grep "ERROR" logs/pipeline_20251119.log
 
 **Issue: "Database not found"**
 - Run `python main.py sync` first to create baseline
-- Ensure weekly full backup file is in `data/reports/0031/`
+- Ensure full backup file is in `data/reports/0031/`
 
 **Issue: "Validation warnings"**
 - Review Excel report in `data/database/audit/`
@@ -574,4 +574,5 @@ Internal use only - CLS Allscripts Data Processing Pipeline
 
 **Last Updated:** 2025-11-19  
 **Version:** 1.0  
+
 **Python Version:** 3.1
