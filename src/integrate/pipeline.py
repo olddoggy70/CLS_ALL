@@ -177,7 +177,14 @@ def get_integrate_status(config: dict, paths: dict) -> dict:
     if not integrated_output.exists():
         return {'phase': 'Integration', 'status': 'Not started', 'output_files': 0}
 
-    output_files = list(integrated_output.glob('*.parquet'))
+    # Get output format from config, default to parquet
+    output_format = config.get('phases', {}).get('integration', {}).get('output_format', 'parquet')
+    
+    # Check for files with the configured extension
+    output_files = list(integrated_output.glob(f'*.{output_format}'))
+    
+    # Sort by modification time (newest last)
+    output_files.sort(key=lambda f: f.stat().st_mtime)
 
     return {
         'phase': 'Integration',
