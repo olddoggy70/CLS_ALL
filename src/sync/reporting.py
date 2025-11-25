@@ -9,6 +9,8 @@ from pathlib import Path
 
 import polars as pl
 
+from ..constants import Columns0031
+
 
 def save_combined_report(
     validation_results: dict,
@@ -31,7 +33,7 @@ def save_combined_report(
         Dictionary with paths to generated report files
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.reporting')
+        logger = logging.getLogger('data_pipeline.sync')
 
     timestamp = datetime.now().strftime('%Y-%m-%d')
 
@@ -110,9 +112,9 @@ def generate_markdown_report(validation_results: dict, change_results: dict, pro
 
         # Overall summary
         report.append('### Overall Changes\n')
-        report.append(f'- **Total Changes:** {changes_summary.get("total_changes", 0):,}\n')
         report.append(f'- **New Rows:** {changes_summary.get("new_rows", 0):,}\n')
         report.append(f'- **Updated Rows:** {changes_summary.get("updated_rows", 0):,}\n')
+        report.append(f'- **Skipped Rows (Outdated):** {changes_summary.get("skipped_rows", 0):,}\n')
         report.append(f'- **Files Processed:** {changes_summary.get("files_processed", 0)}\n')
 
         # Per-file breakdown
@@ -121,7 +123,8 @@ def generate_markdown_report(validation_results: dict, change_results: dict, pro
             report.append('\n### Per-File Breakdown\n')
             for file_info in per_file_summary:
                 report.append(f'\n**File {file_info["file_index"]}: {file_info["file"]}**\n')
-                report.append(f'- Total Changes: {file_info["total_changes"]:,}\n')
+                report.append(f'- Original Rows: {file_info.get("original_rows", 0):,}\n')
+                report.append(f'- Rows Dropped (Outdated): {file_info.get("dropped_rows", 0):,}\n')
                 report.append(f'- New Rows: {file_info["new_rows"]:,}\n')
                 report.append(f'- Updated Rows: {file_info["updated_rows"]:,}\n')
 
@@ -130,7 +133,7 @@ def generate_markdown_report(validation_results: dict, change_results: dict, pro
                 if date_breakdown is not None and len(date_breakdown) > 0:
                     report.append('\n**Breakdown by Update Date:**\n')
                     for row in date_breakdown.iter_rows(named=True):
-                        update_date = row['Item Update Date']
+                        update_date = row[Columns0031.ITEM_UPDATE_DATE]
                         row_count = row['row_count']
                         report.append(f'- {update_date}: {row_count:,} rows\n')
                 else:
@@ -164,7 +167,7 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         logger: Logger instance
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.reporting')
+        logger = logging.getLogger('data_pipeline.sync')
 
     # Import xlsxwriter for multi-sheet Excel files
     import xlsxwriter
@@ -209,12 +212,12 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         # Change tracking summary
         if change_results.get('has_changes'):
             changes_summary = change_results.get('changes_summary', {})
-            summary_data.append(
-                {'Category': 'Changes', 'Metric': 'Total Changes', 'Value': changes_summary.get('total_changes', 0)}
-            )
             summary_data.append({'Category': 'Changes', 'Metric': 'New Rows', 'Value': changes_summary.get('new_rows', 0)})
             summary_data.append(
                 {'Category': 'Changes', 'Metric': 'Updated Rows', 'Value': changes_summary.get('updated_rows', 0)}
+            )
+            summary_data.append(
+                {'Category': 'Changes', 'Metric': 'Skipped Rows (Outdated)', 'Value': changes_summary.get('skipped_rows', 0)}
             )
             summary_data.append(
                 {'Category': 'Changes', 'Metric': 'Files Processed', 'Value': changes_summary.get('files_processed', 0)}
@@ -250,11 +253,25 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
                     {
                         'file': 'File Name',
                         'file_index': 'File #',
-                        'total_changes': 'Total Changes',
+                        'original_rows': 'Original Rows',
+                        'dropped_rows': 'Rows Dropped',
                         'new_rows': 'New Rows',
                         'updated_rows': 'Updated Rows',
                         'latest_update_date': 'Latest Update Date',
                     }
+                )
+                
+                # Reorder columns
+                per_file_df = per_file_df.select(
+                    [
+                        'File Name',
+                        'File #',
+                        'Original Rows',
+                        'Rows Dropped',
+                        'New Rows',
+                        'Updated Rows',
+                        'Latest Update Date',
+                    ]
                 )
                 _write_dataframe_to_worksheet(workbook, per_file_df, 'Per-File Summary', logger)
 
@@ -274,33 +291,13 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
                     combined_breakdown = pl.concat(all_date_breakdowns, how='diagonal')
                     combined_breakdown = combined_breakdown.select(['File Name', 'Item Update Date', 'row_count'])
                     combined_breakdown = combined_breakdown.rename({'row_count': 'Row Count'})
-                    _write_dataframe_to_worksheet(workbook, combined_breakdown, 'Date Breakdown', logger)
+                    _write_dataframe_to_worksheet(workbook, combined_breakdown, 'Accepted Rows by Date', logger)
 
-        # === Sheet 4: New Rows (UPDATED - Full records instead of field-level) ===
+        # === Sheet 4: New Rows (UPDATED - Full records) ===
         new_rows_df = change_results.get('new_rows_df')
         if new_rows_df is not None and len(new_rows_df) > 0:
-            # Transform from field-level to record-level format
-            # Original format: Each row is one field of a record
-            # Target format: Each row is one complete record with all fields as columns
-
-            key_cols = ['PMM Item Number', 'Corp Acct', 'Vendor Code', 'Additional Cost Centre', 'Additional GL Account']
-
-            # Filter out rows where 'Column' matches any of the index columns (they're already in the index)
-            # This includes the 5 key columns + Item Update Date
-            index_cols = [*key_cols, 'Item Update Date']
-            new_rows_filtered = new_rows_df.filter(~pl.col('Column').is_in(index_cols))
-
-            # Only create the sheet if we have data after filtering
-            if len(new_rows_filtered) > 0:
-                # Pivot to get all columns as actual columns
-                new_records = new_rows_filtered.pivot(
-                    index=index_cols,
-                    columns='Column',
-                    values='Current Value',
-                    aggregate_function='first',  # Take first value if duplicates exist
-                )
-
-                _write_dataframe_to_worksheet(workbook, new_records, 'New Rows', logger)
+            # Now we just write the dataframe directly as it's already in the correct format
+            _write_dataframe_to_worksheet(workbook, new_rows_df, 'New Rows', logger)
 
         # === Sheet 5: Updated Rows (KEEP AS-IS - Field-level changes) ===
         updated_rows_df = change_results.get('updated_rows_df')
@@ -358,12 +355,12 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
         blank_catalogue_df = validation_results.get('blank_vendor_catalogue_df')
         if blank_catalogue_df is not None and len(blank_catalogue_df) > 0:
             # Get PMM Item Numbers from the dataframe
-            pmm_items = blank_catalogue_df.get_column('PMM Item Number').to_list()
+            pmm_items = blank_catalogue_df.get_column(Columns0031.PMM_ITEM_NUMBER).to_list()
             for pmm_item in pmm_items[:100]:  # Limit to first 100
                 validation_issues.append(
                     {
                         'Issue Type': 'Unexpected Blank Vendor Catalogue',
-                        'PMM Item Number': pmm_item,
+                        Columns0031.PMM_ITEM_NUMBER: pmm_item,
                         'Details': 'Vendor Catalogue is blank but not in permitted list',
                     }
                 )
@@ -375,10 +372,10 @@ def save_excel_report(excel_file: Path, validation_results: dict, change_results
                 validation_issues.append(
                     {
                         'Issue Type': 'Inconsistent Vendor Catalogue',
-                        'PMM Item Number': item.get('pmm_item'),
-                        'Vendor Code': item.get('vendor_code'),
+                        Columns0031.PMM_ITEM_NUMBER: item.get('pmm_item'),
+                        Columns0031.VENDOR_CODE: item.get('vendor_code'),
                         'Vendor Seq': item.get('vendor_seq'),
-                        'Corp Acct': item.get('corp_acct'),
+                        Columns0031.CORP_ACCT: item.get('corp_acct'),
                         'Details': f'Found {item.get("unique_catalogues", 0)} different catalogues',
                         'Vendor Catalogue': item.get('catalogue_values'),
                     }
@@ -407,7 +404,7 @@ def _write_dataframe_to_worksheet(workbook, df: pl.DataFrame, sheet_name: str, l
         logger: Logger instance
     """
     if logger is None:
-        logger = logging.getLogger('data_pipeline.sync.reporting')
+        logger = logging.getLogger('data_pipeline.sync')
 
     worksheet = workbook.add_worksheet(sheet_name[:31])  # Excel sheet name limit is 31 chars
 

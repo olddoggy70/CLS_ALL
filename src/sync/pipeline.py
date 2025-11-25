@@ -9,9 +9,9 @@ All configuration and paths must be provided by the calling application.
 import logging
 from pathlib import Path
 
-from .sync_core.orchestrator import update_parquet_if_needed
-from .sync_core.sync_state import get_update_status
-from .sync_core.sync_state import print_status as print_status_internal
+from .orchestrator import update_parquet_if_needed
+from .sync_state import get_update_status
+from .sync_state import print_status as print_status_internal
 
 
 def auto_check_and_update(config: dict, paths: dict, logger: logging.Logger | None = None) -> bool:
@@ -30,7 +30,7 @@ def auto_check_and_update(config: dict, paths: dict, logger: logging.Logger | No
     if logger is None:
         logger = logging.getLogger('data_pipeline.sync')
 
-    return update_parquet_if_needed(config, paths, force_rebuild=False, logger=logger)
+    return update_parquet_if_needed(config, paths, logger=logger)
 
 
 def daily_update(config: dict, paths: dict, logger: logging.Logger | None = None) -> bool:
@@ -48,7 +48,7 @@ def daily_update(config: dict, paths: dict, logger: logging.Logger | None = None
     if logger is None:
         logger = logging.getLogger('data_pipeline.sync')
 
-    return update_parquet_if_needed(config, paths, force_rebuild=False, logger=logger)
+    return update_parquet_if_needed(config, paths, logger=logger)
 
 
 def force_update(config: dict, paths: dict, logger: logging.Logger | None = None) -> bool:
@@ -66,7 +66,8 @@ def force_update(config: dict, paths: dict, logger: logging.Logger | None = None
     if logger is None:
         logger = logging.getLogger('data_pipeline.sync')
 
-    return update_parquet_if_needed(config, paths, force_rebuild=True, logger=logger)
+    logger.warning("Force update is no longer supported via this method. Checking for new files instead.")
+    return update_parquet_if_needed(config, paths, logger=logger)
 
 
 def apply_incremental(config: dict, paths: dict, file_path: str, logger: logging.Logger | None = None) -> bool:
@@ -85,7 +86,8 @@ def apply_incremental(config: dict, paths: dict, file_path: str, logger: logging
     if logger is None:
         logger = logging.getLogger('data_pipeline.sync')
 
-    return update_parquet_if_needed(config, paths, force_rebuild=False, incremental_file=Path(file_path), logger=logger)
+    logger.warning("Single file incremental update is deprecated. Checking for all new files.")
+    return update_parquet_if_needed(config, paths, logger=logger)
 
 
 def get_status(config: dict, paths: dict) -> dict:

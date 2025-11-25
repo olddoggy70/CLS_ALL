@@ -16,17 +16,17 @@ import os
 import sys
 import time
 from pathlib import Path
-
 import psutil
+
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.classification import get_classify_status, process_classify
-from src.database_sync import process_sync
+from src.classify import get_classify_status, process_classify
 from src.export import get_export_status, process_export
 from src.integrate import get_integrate_status, process_integrate
 from src.logging_config import setup_logging
+from src.sync import process_sync
 
 
 def load_config() -> dict:
@@ -277,11 +277,12 @@ def main():
     """Main CLI entry point"""
 
     # Set process to high priority for performance
-    try:
-        p = psutil.Process(os.getpid())
-        p.nice(psutil.HIGH_PRIORITY_CLASS)
-    except Exception:
-        pass  # Ignore if can't set priority (e.g., on Linux/Mac)
+    if psutil:
+        try:
+            p = psutil.Process(os.getpid())
+            p.nice(psutil.HIGH_PRIORITY_CLASS)
+        except Exception:
+            pass  # Ignore if can't set priority (e.g., on Linux/Mac)
 
     # Handle help flag
     if len(sys.argv) > 1 and sys.argv[1] in ['--help', '-h', 'help']:
@@ -295,7 +296,8 @@ def main():
     # Setup logging
     console_level = config.get('logging', {}).get('console_level', 'INFO')
     file_level = config.get('logging', {}).get('file_level', 'DEBUG')
-    logger, log_file = setup_logging(paths['log_folder'], console_level, file_level)
+    enable_timing = config.get('logging', {}).get('enable_timing', False)
+    logger, log_file = setup_logging(paths['log_folder'], console_level, file_level, enable_timing)
 
     logger.info('=== Data Processing Pipeline ===')
     logger.info(f'Log file: {log_file.name}')
@@ -307,6 +309,7 @@ def main():
     command = sys.argv[1].lower()
 
     logger.info(f'Command: {command}')
+    start_time = time.time()
     logger.info(f'Time: {time.strftime("%Y-%m-%d %H:%M:%S")}')
 
     try:
@@ -355,8 +358,9 @@ def main():
             print_usage()
             sys.exit(1)
 
+        elapsed_time = time.time() - start_time
         logger.info('')
-        logger.info('=== Pipeline Command Completed ===')
+        logger.info(f'=== Pipeline Command Completed in {elapsed_time:.2f} seconds ===')
 
     except KeyboardInterrupt:
         logger.warning('Process interrupted by user')

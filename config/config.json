@@ -10,9 +10,9 @@
     "daily_archive_folder": "data/daily_files/archive",
     "output_folder": "data/output",
     "test_csv": "test.csv",
-    "integrated_output": "data/integrated",
-    "classified_output": "data/classified",
-    "exports_output": "data/exports",
+    "integrated_output": "data/output/integrated",
+    "classified_output": "data/output/classified",
+    "exports_output": "data/output/exports",
     "reference_files": {
       "mfn_mapping": "data/ref_files/MFN Mapping.xlsx",
       "vn_mapping": "data/ref_files/VN Mapping.xlsx",
@@ -26,7 +26,11 @@
     },
     "integration": {
       "enabled": true,
-      "description": "Integrate daily files with 0031 baseline"
+      "description": "Integrate daily files with 0031 baseline",
+      "output_format": "xlsx",
+      "date_column": "Date and Time Stamp",
+      "date_format": "%Y-%b-%d %I:%M:%S %p",
+      "filename_prefix": "integrated"
     },
     "classification": {
       "enabled": true,
@@ -45,17 +49,17 @@
     }
   },
   "file_patterns": {
-    "daily_incremental": {
-      "pattern": "0031-Contract Item Price Cat Pkg Extract *.xlsx",
+    "0031_incremental": {
+      "pattern": "0031-Contract Item Price Cat Pkg Extract [0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9]*.xlsx",
       "date_format": "0031-Contract Item Price Cat Pkg Extract %Y_%m_%d*.xlsx",
       "archive_after_processing": true,
-      "description": "Matches: 0031-Contract Item Price Cat Pkg Extract 2025_11_06.xlsx or 0031-Contract Item Price Cat Pkg Extract 2025_10_28-2025_11_02.xlsx"
+      "description": "INCREMENTAL: Matches files with YYYY_MM_DD format (e.g. ...2025_11_06.xlsx). Updates existing database."
     },
-    "weekly_full": {
+    "0031_full": {
       "pattern": "0031-Contract Item Price Cat Pkg Extract [0-9][0-9][0-9][0-9].xlsx",
       "date_format": "0031-Contract Item Price Cat Pkg Extract %m%d.xlsx",
       "keep_only_latest": true,
-      "description": "Matches: 0031-Contract Item Price Cat Pkg Extract 0201.xlsx (MMDD format)"
+      "description": "FULL BACKUP: Matches files with MMDD format (e.g. ...0201.xlsx). Triggers complete database rebuild."
     },
     "daily_files": {
       "pattern": "Allscripts_historical_deduped_*.xlsx",
@@ -75,7 +79,12 @@
   },
   "data_processing": {
     "filter_rules": {
-      "exclude_corp_acct": ["0202", "0205", "0502"],
+      "exclude_corp_acct": [
+        "0202",
+        "0205",
+        "0502",
+        "0405"
+      ],
       "exclude_vendor_prefix": []
     },
     "date_columns": [
@@ -123,7 +132,6 @@
       "MISC4",
       "Tax Jurisdiction",
       "Item Create Date",
-      "Item Update Date",
       "Supply Type Code"
     ]
   },
@@ -139,6 +147,7 @@
   "logging": {
     "console_level": "INFO",
     "file_level": "DEBUG",
+    "enable_timing": true,
     "log_folder": "logs",
     "retention_days": 30
   }

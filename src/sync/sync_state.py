@@ -11,7 +11,6 @@ def load_state(state_file: Path) -> dict:
             return json.load(f)
     return {
         'last_update': None,
-        'file_timestamps': {},
         'last_backup': None,
         'last_full_backup': None,
         'last_full_backup_file': None,
@@ -38,7 +37,6 @@ def get_update_status(config: dict, paths: dict) -> dict:
         'last_full_backup': state.get('last_full_backup'),
         'last_full_backup_file': state.get('last_full_backup_file'),
         'applied_incrementals_count': len(state.get('applied_incrementals', [])),
-        'tracked_files': len(state.get('file_timestamps', {})),
         'row_count': state.get('row_count'),
         'column_count': state.get('column_count'),
     }
