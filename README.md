@@ -1,3 +1,4 @@
+
 # CLS Allscripts Data Processing Pipeline
 
 ![Python](https://img.shields.io/badge/python-3.12-blue)
@@ -5,7 +6,7 @@
 ![Status](https://img.shields.io/badge/status-stable-success)
 ![License](https://img.shields.io/badge/license-internal-lightgrey)
 
-A multi-phase data processing pipeline for synchronizing, integrating, classifying, and exporting healthcare procurement data.
+A four-phase pipeline for processing contract pricing data from BC to Allscripts: database synchronization, daily integration with enrichment and validation, classification (in development), and export (in development).
 
 ## Table of Contents
 
@@ -93,13 +94,14 @@ The pipeline handles ~1.4M records with automatic change tracking, data validati
 - ✅ **Enrichment** - adds PMM mappings, vendor information, contract analysis
 - ✅ **Reference mappings** - MFN and VN mappings from reference files
 - ✅ **Duplicate handling** - collapses multiple PMM candidates per record
+- ✅ **Excel generation** - formatted exports with date ranges
+- ✅ **Automatic dating** - filename includes data date range
 
 ### Phase 2: Classification
 - 🚧 **In development** - classify records into update/create/link buckets
 
 ### Phase 3: Export
-- ✅ **Excel generation** - formatted exports with date ranges
-- ✅ **Automatic dating** - filename includes data date range
+- 🚧 **In development** - generate final export files for system upload
 
 ---
 
@@ -150,7 +152,7 @@ The pipeline handles ~1.4M records with automatic change tracking, data validati
    ```bash
    python main.py sync
    ```
-   This creates the baseline `0031.parquet` database (~50MB, 1.4M rows).
+   This creates the baseline `0031.parquet` database (~100MB, 1.4M rows).
 
 ### Daily Operations
 
@@ -845,9 +847,10 @@ cls_project/
     ├── reports/0031/           # Input: incremental files
     ├── reports/archive/        # Archived incrementals
     ├── daily_files/            # Input: Allscripts files
-    ├── integrated/             # Phase 1 output
-    ├── classified/             # Phase 2 output
-    ├── exports/                # Phase 3 output
+    ├── output/                 # Phase outputs
+    │   ├── integrated/         # Phase 1 output
+    │   ├── classified/         # Phase 2 output
+    │   └── exports/            # Phase 3 output
     └── ref_files/              # Reference files
 ```
 
