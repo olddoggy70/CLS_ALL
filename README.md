@@ -28,6 +28,8 @@ A four-phase pipeline for processing contract pricing data from BC to Allscripts
 - [FAQ](#faq)
 - [Common Error Codes](#common-error-codes)
 
+
+
 ---
 
 ## Overview
@@ -101,7 +103,7 @@ The pipeline handles ~1.4M records with automatic change tracking, data validati
 - 🚧 **In development** - classify records into update/create/link buckets
 
 ### Phase 3: Export
-- 🚧 **In development** - generate final export files for system upload
+- 🚧 **In development** - generate final CSV export files for system upload, Excel for reference
 
 ---
 
@@ -132,9 +134,9 @@ The pipeline handles ~1.4M records with automatic change tracking, data validati
 
 4. **Prepare reference files**
    - Place reference files in `data/ref_files/`:
-     - `MFN Mapping.xlsx`
-     - `VN Mapping.xlsx`
-     - `Blank Vpn Permitted.xlsx`
+     - `MFN Mapping.xlsx` - Manufacturer number mappings
+     - `VN Mapping.xlsx` - Vendor number mappings
+     - `Blank Vpn Permitted.xlsx` - Approved list of items allowed to have blank vendor catalogues
 
 ---
 
@@ -183,11 +185,13 @@ python main.py <command>
 |---------|-------------|------------|
 | `sync` | Update 0031 database only | Phase 0 |
 | `integrate` | Sync database + integrate daily files | Phase 0 → 1 |
-| `classify` | Full pipeline up to classification | Phase 0 → 1 → 2 |
-| `export` | Complete end-to-end processing | Phase 0 → 1 → 2 → 3 |
-| `all` | Same as export (full pipeline) | Phase 0 → 1 → 2 → 3 |
+| `classify` | Full pipeline up to classification | Phase 0 → 1 → 2* |
+| `export` | Complete end-to-end processing | Phase 0 → 1 → 2* → 3* |
+| `all` | Same as export (full pipeline) | Phase 0 → 1 → 2* → 3* |
 | `status` | Show current pipeline status | Status only |
 | `--help` | Show help information | Help only |
+
+\* Phase 2-3 currently in development
 
 ### Examples
 
@@ -212,16 +216,31 @@ python main.py sync
 ```
 
 ---
-2. **Smart Sync:** Filters out outdated rows (Incoming Date > Existing Date)
+
+## Pipeline Phases
+
+### Phase 0: Database Sync
+
+**Purpose:** Maintain the 0031.parquet database by applying incremental updates or full refreshes.
+
+**Input Files:**
+- **Full:** `0031-Contract Item Price Cat Pkg Extract 1108.xlsx` (MMDD format)
+- **Incremental:** `0031-Contract Item Price Cat Pkg Extract 2025_11_06.xlsx`
+
+**Processing:**
+1. **Auto-Detection:** Identifies file type (full vs incremental)
+2. **Backup:** Creates backup before modifications
+3. **Smart Sync:** Filters out outdated rows (Incoming Date > Existing Date)
    - Example: If DB has Item A with date 2025-11-20, incoming Item A with date 2025-11-19 is rejected
    - Prevents accidental overwrites with stale data
    - See `src/sync/merge.py::filter_outdated_rows()` for implementation
-3. **Change Tracking:**
+4. **Change Tracking:** Applies changes with field-level tracking
    - **New Rows:** Reported in full wide format (no field-level melt)
    - **Updated Rows:** Detailed field-level comparison (vectorized for speed)
    - **Whitespace Tracking:** Tracks whitespace changes (e.g., 'ABC' vs 'AB C')
-4. **Validation:** Checks for data quality issues
-5. **Reporting:** Generates detailed Excel/Markdown reports
+5. **Validation:** Checks for data quality issues
+6. **Reporting:** Generates comprehensive Excel/Markdown reports
+7. **Archiving:** Archives processed files
 
 **Outputs:**
 - `data/database/0031.parquet` - Main database
@@ -247,14 +266,20 @@ python main.py sync
 - `data/daily_files/Allscripts_historical_deduped_*.xlsx`
 
 **Processing:**
-1. Reads daily files with source tracking
-2. Enriches with 0031 database lookups (PMM mappings, vendor info)
-3. Adds contract analysis and reference mappings
-4. Flags duplicates and inconsistencies
+1. **Source Tracking:** Reads daily files with source tracking
+2. **Enrichment:** Enriches with 0031 database lookups (PMM mappings, vendor info)
+3. **Reference Mapping:** Adds contract analysis and reference mappings
+4. **Quality Flagging:** Flags duplicates and inconsistencies
 
 **Outputs:**
-- `data/integrated/integrated_<timestamp>.<format>` 
-- Format is configurable in `config.json` → `integration.output_format` (options: `xlsx`, `parquet`, `csv`)
+- `data/output/integrated/integrated_<timestamp>.<format>` 
+  - Format is configurable in `config.json` → `integration.output_format` (options: `xlsx`, `parquet`, `csv`)
+
+**Key Features:**
+- **Dynamic Enrichment:** Combines 0031 database with daily Allscripts data
+- **Flexible Output:** Supports Excel, Parquet, or CSV formats
+- **Date Range Tracking:** Automatic filename dating based on data date range
+- **Duplicate Detection:** Identifies and flags duplicate records
 
 ### Phase 2: Classification
 
@@ -270,13 +295,14 @@ python main.py sync
 
 ### Phase 3: Export
 
-**Purpose:** Generate final Excel exports from processed data.
+**Purpose:** Generate final Excel and CSV exports from processed data.
 
-**Input:** Latest integrated file (until Phase 2 is implemented)
+**Status:** 🚧 In development
 
-**Output:**
-- `data/exports/ExportFile_<date_range>.xlsx`
-- Example: `ExportFile_2025-11-01~2025-11-06.xlsx`
+**Planned Output:**
+- `data/output/exports/ExportFile_<date_range>.xlsx` (reference)
+- `data/output/exports/ExportFile_<date_range>.csv` (system upload)
+- Example: `ExportFile_2025-11-01~2025-11-06.xlsx` and `ExportFile_2025-11-01~2025-11-06.csv`
 
 ---
 
@@ -474,7 +500,7 @@ Smart Sync → Rejects row (2025-11-19 < 2025-11-20)
   "integration": {
     "output_format": "xlsx",
     "daily_files_path": "data/daily_files",
-    "output_path": "data/integrated"
+    "output_path": "data/output/integrated"
   },
   "logging": {
     "console_level": "DEBUG",
@@ -514,7 +540,7 @@ Smart Sync → Rejects row (2025-11-19 < 2025-11-20)
   "integration": {
     "output_format": "parquet",
     "daily_files_path": "D:/Production/Data/DailyFiles",
-    "output_path": "D:/Production/Data/Integrated"
+    "output_path": "D:/Production/Data/Output/Integrated"
   },
   "archive_settings": {
     "enabled": true,
@@ -721,10 +747,10 @@ python main.py sync
 ```bash
 # Delete partial integrated file
 # Windows
-del data\integrated\integrated_*.xlsx
+del data\\output\\integrated\\integrated_*.xlsx
 
 # Linux/Mac
-rm data/integrated/integrated_*.xlsx
+rm data/output/integrated/integrated_*.xlsx
 
 # Re-run integration
 python main.py integrate
@@ -735,7 +761,7 @@ python main.py integrate
 ## Architecture
 
 For detailed technical documentation, see:
-- **[Phase0_Architecture.md](Phase0_Architecture.md)** - Complete Phase 0 technical documentation
+- **[Phase0&1_Architecture.md](Phase0&1_Architecture.md)** - Complete Phase 0 & 1 technical documentation
   - Function call hierarchy and module interactions
   - Detailed descriptions of each module (orchestrator, core, merge, quality, reporting)
   - Logger hierarchy and configuration
@@ -762,20 +788,20 @@ For detailed technical documentation, see:
                          ▼
                   ┌──────────────┐
                   │   Phase 1    │
-                  │ Integration  │──▶ integrated_<timestamp>.<format>
+                  │ Integration  │──▶ data/output/integrated/
                   └──────────────┘
                          │
                          ▼
                   ┌──────────────┐
                   │   Phase 2    │
-                  │Classification│──▶ classified_<timestamp>.xlsx
+                  │Classification│──▶ data/output/classified/
                   └──────────────┘──▶ (In Development)
                          │
                          ▼
                   ┌──────────────┐
                   │   Phase 3    │
-                  │    Export    │──▶ ExportFile_<date_range>.xlsx
-                  └──────────────┘
+                  │    Export    │──▶ data/output/exports/ (.xlsx/.csv)
+                  └──────────────┘──▶ (In Development)
 ```
 
 ### High-Level Architecture
@@ -839,7 +865,7 @@ cls_project/
 │   ├── classify/               # Phase 2: Classification
 │   │   └── ...                 # (In development)
 │   ├── export/                 # Phase 3: Export
-│   │   └── ...                 # Export logic
+│   │   └── ...                 # (In development)
 │   └── utils/                  # Shared utilities
 │       └── ...
 └── data/
@@ -910,6 +936,8 @@ Validation warnings don't stop processing - review reports and address issues se
 - 5 files combined: ~50,000-75,000 rows processed
 - File sizes: 3-8 MB per Excel file
 - Database size after merge: ~50 MB (1.4M rows)
+
+**Test Environment:** 16GB RAM, SSD storage
 
 The pipeline automatically detects and batch-processes multiple files efficiently using:
 - Polars lazy evaluation for memory efficiency
@@ -1033,7 +1061,7 @@ Internal use only - CLS Allscripts Data Processing Pipeline
 
 ---
 
-**Last Updated:** 2025-11-23 21:33  
+**Last Updated:** 2025-11-25 18:25  
 **Version:** 1.0.0  
 **Python Version:** 3.12
 
