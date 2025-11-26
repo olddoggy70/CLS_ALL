@@ -7,17 +7,15 @@ import logging
 from pathlib import Path
 
 import polars as pl
-from ..constants import Columns0031, DailyColumns
 
+from ..constants import Columns0031, DailyColumns
 from ..utils.date_utils import extract_date_range
 
 # Import utilities
 from ..utils.file_operations import archive_file
 
 # Import new modules
-from . import ingest
-from . import baseline
-from . import enrichment
+from . import baseline, enrichment, ingest
 
 
 def process_integrate(config: dict, paths: dict, logger: logging.Logger | None = None) -> bool:
@@ -75,6 +73,7 @@ def process_integrate(config: dict, paths: dict, logger: logging.Logger | None =
     except Exception as e:
         logger.error(f'Phase 1 failed: {e}')
         import traceback
+
         logger.debug(traceback.format_exc())
         raise
 
@@ -91,7 +90,12 @@ def _finalize_dataframe(df: pl.DataFrame, logger: logging.Logger | None = None) 
 
     # Add duplicates flag
     df = df.with_columns(
-        [pl.when(pl.len().over([DailyColumns.SOURCE_FILE, Columns0031.INDEX]) > 1).then(pl.lit('Y')).otherwise(pl.lit('')).alias('Duplicates')]
+        [
+            pl.when(pl.len().over([DailyColumns.SOURCE_FILE, Columns0031.INDEX]) > 1)
+            .then(pl.lit('Y'))
+            .otherwise(pl.lit(''))
+            .alias('Duplicates')
+        ]
     )
 
     return df
@@ -179,10 +183,10 @@ def get_integrate_status(config: dict, paths: dict) -> dict:
 
     # Get output format from config, default to parquet
     output_format = config.get('phases', {}).get('integration', {}).get('output_format', 'parquet')
-    
+
     # Check for files with the configured extension
     output_files = list(integrated_output.glob(f'*.{output_format}'))
-    
+
     # Sort by modification time (newest last)
     output_files.sort(key=lambda f: f.stat().st_mtime)
 
