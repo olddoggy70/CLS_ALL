@@ -132,6 +132,7 @@
       "MISC4",
       "Tax Jurisdiction",
       "Item Create Date",
+      "Item Update Date",
       "Supply Type Code"
     ]
   },
